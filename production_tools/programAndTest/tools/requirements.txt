@@ -1,0 +1,13 @@
+# Host-side Python dependencies for test_host.py and the label printer tools.
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r tools/requirements.txt
+#   .venv/bin/python test_host.py --port /dev/ttyUSB0
+#
+# USB access to the label printer needs no root: the printer enumerates as
+# root:lp, so membership of the `lp` group is enough.
+pyserial
+pillow
+pyusb
+qrcode
+boto3

@@ -21,9 +21,11 @@ firmware upload requests by invoking PlatformIO commands.
 
 import argparse
 import csv
+import json
 import logging
 import os
 import re
+import secrets
 import serial
 import subprocess
 import sys
@@ -32,21 +34,46 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "firmware" / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools" / "report"))
 from fb_image import BL_APPEND, BL_BOOTEND, BOOTLOADER_ENV, BOOTLOADER_HEX  # noqa: E402
 
 # Commands from ESP32
 CMD_PING = ">>PING<<"
 CMD_START_UPLOAD = ">>START_FIRMWARE_UPLOAD<<"
 CMD_SERIAL_PREFIX = ">>SERIAL:"  # Serial number format: >>SERIAL:AABBCCDDEEFF00112233<<
+CMD_FW_VERSION_PREFIX = ">>FW_VERSION:"  # Installed app version, e.g. >>FW_VERSION:1.4<<
+CMD_PROTOCOL_VERSION_PREFIX = ">>PROTOCOL_VERSION:"  # I2C protocol version, e.g. >>PROTOCOL_VERSION:5<<
 CMD_TEST_START = ">>TEST_START<<"  # Sent once when the full test sequence begins
 CMD_TEST_RESULT_PREFIX = ">>TEST_RESULT:"  # Followed by PASS<< or FAIL:<reason><<
 
 # Responses to ESP32
+# Datapoint reporting emitted by the jig (see the reporting block in
+# src/main.cpp). Values never contain a colon, so the fields split cleanly.
+PHASE_START_RE = re.compile(r">>PHASE_START:([A-Z0-9_]+)<<")
+PHASE_END_RE = re.compile(r">>PHASE_END:([A-Z0-9_]+):(PASS|FAIL):(\d+)<<")
+DATA_RE = re.compile(
+    r">>DATA:([A-Z0-9_]+):([A-Za-z0-9_]+)=([^:<]*):([^:<]*):([^:<]*):([^:<]*):([^:<]*):([^:<]*)<<")
+
 RESP_ACK = ">>ACK<<"
 RESP_SUCCESS = ">>SUCCESS<<"
 RESP_FAILURE = ">>FAILURE<<"
 
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
+
+# Where the QR code on a DUT label points (see docs/HOSTING_TEST_REPORTS.md).
+# The report URL is a capability URL: the token in it is not a salt (nothing is
+# hashed with it) but the credential itself, so it has to be unguessable rather
+# than merely non-obvious.
+#
+# 128 bits of token is free here. The /faderbuddy/ path already forces a
+# version-4 QR (140 dots on the label) whatever the token length, and a v4
+# symbol has room to spare - but only if the token is UPPERCASE hex, which QR
+# encodes in its denser alphanumeric mode rather than byte mode. Lowercase would
+# tip the same 16 bytes to a version-5 symbol and cost ~16 dots of the label.
+# Hence .upper() in report_token(); don't "tidy" it away.
+REPORT_URL_TEMPLATE = "https://qc.bezeklabs.com/faderbuddy/{serial}-{token}"
+REPORT_TOKEN_BYTES = 16
 
 CSV_COLUMNS = [
     "Batch ID",
@@ -59,18 +86,25 @@ CSV_COLUMNS = [
     "Failure Details",
     "Test Host Git Commit",
     "Test Host Startup Time (epoch ms)",
+    # Appended last so rows written before this column existed stay readable.
+    "Firmware Version",
+    "Report Token",
 ]
 
 
 class TestHost:
     def __init__(self, port: str, updi_port: str = None, baud: int = 115200, dummy: bool = False,
-                 batch_id: str = None):
+                 batch_id: str = None, print_labels: bool = True,
+                 upload_reports: bool = True):
         self.port = port
         self.updi_port = updi_port
         self.baud = baud
         self.dummy = dummy
         self.serial = None
         self.serial_number = None  # Store the last read serial number
+        self.fw_version = None  # Firmware version the DUT reported after the I2C update
+        self.protocol_version = None
+        self.phases = []  # Datapoints for the current run, in the order reported
 
         # Determine paths relative to this script
         self.script_dir = Path(__file__).parent.absolute()
@@ -79,7 +113,10 @@ class TestHost:
 
         # CSV result logging
         self.batch_id = batch_id or None
+        self.print_labels = print_labels
+        self.upload_reports = upload_reports
         self.csv_path = self.logs_dir / "results.csv"
+        self._report_tokens = None  # serial -> report token, loaded from the CSV on first use
         self.startup_time_ms = int(time.time() * 1000)
         self.git_commit = self._get_git_commit()
         self.current_test_start_time_ms = None  # Set when >>TEST_START<< is received
@@ -96,6 +133,11 @@ class TestHost:
             logging.warning("No Batch ID set - test results will NOT be logged to CSV")
         if self.dummy:
             logging.warning("DUMMY MODE ENABLED - Firmware uploads will be simulated")
+        if not self.print_labels:
+            logging.info("Label printing disabled for this run")
+        if not self.upload_reports:
+            logging.info("Report upload disabled for this run - reports are still "
+                         "written locally and can be backfilled later")
 
     def _setup_batch_log_file(self):
         """Append all INFO-level (and above) log output for this run to a per-batch raw log file."""
@@ -130,6 +172,149 @@ class TestHost:
             logging.warning(f"Failed to determine git commit: {e}")
             return "unknown"
 
+    def handle_report_line(self, line: str) -> bool:
+        """Consume a PHASE_START / DATA / PHASE_END line. True if it was one."""
+        match = PHASE_START_RE.search(line)
+        if match:
+            from report_render import Phase
+            self.phases.append(Phase(key=match.group(1)))
+            return True
+
+        match = DATA_RE.search(line)
+        if match:
+            from report_render import Datapoint, Phase
+            phase_key, key, value, unit, lo, hi, axis_lo, axis_hi = match.groups()
+            # A datapoint should always fall inside its phase, but don't drop it
+            # if the PHASE_START was garbled on the wire.
+            if not self.phases or self.phases[-1].key != phase_key:
+                self.phases.append(Phase(key=phase_key))
+            self.phases[-1].data.append(Datapoint(
+                key=key, value=value, unit=unit,
+                limit_lo=lo, limit_hi=hi, axis_lo=axis_lo, axis_hi=axis_hi))
+            return True
+
+        match = PHASE_END_RE.search(line)
+        if match:
+            phase_key, result, elapsed = match.groups()
+            for phase in reversed(self.phases):
+                if phase.key == phase_key:
+                    phase.result = result
+                    phase.elapsed_ms = int(elapsed)
+                    break
+            return True
+
+        return False
+
+    def write_report(self, serial_number: str, token: str, end_time_ms: int,
+                     duration_ms: int):
+        """Write the per-DUT report as JSON plus rendered HTML.
+
+        The JSON is the record: it holds everything the page is built from, so a
+        later template change can be re-applied to old reports (see
+        `report_render.py <file.json>`). Never fatal - a report problem must not
+        fail a board that passed.
+        """
+        try:
+            from report_render import Report, render
+        except ImportError as e:
+            logging.error(f"Report rendering unavailable ({e})")
+            return None
+
+        report = Report(
+            serial=serial_number,
+            token=token,
+            result="PASS",
+            firmware=self.fw_version or "",
+            protocol=str(self.protocol_version) if self.protocol_version else "",
+            tested_at=datetime.fromtimestamp(end_time_ms / 1000).astimezone(),
+            tzname=datetime.fromtimestamp(end_time_ms / 1000).astimezone().tzname() or "",
+            duration_ms=duration_ms,
+            phases=self.phases,
+        )
+        try:
+            reports_dir = self.logs_dir / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            # Named by the object key they will be uploaded to, so the upload
+            # step is a straight copy and a missing report is obvious.
+            stem = f"{serial_number}-{token}"
+            json_path = reports_dir / f"{stem}.json"
+            html_path = reports_dir / f"{stem}.html"
+            json_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n")
+            html_path.write_text(render(report))
+            logging.info(f"Wrote test report to {html_path.name} and "
+                         f"{json_path.name} ({len(self.phases)} phases)")
+        except Exception as e:
+            logging.error(f"Failed to write test report for {serial_number}: {e}")
+            return None
+
+        if self.upload_reports:
+            self.upload_report(html_path)
+        return html_path
+
+    def upload_report(self, html_path: Path):
+        """Publish a report to qc.bezeklabs.com. Never fatal: the local copy is
+        kept regardless, and `tools/report/upload_report.py --all` backfills."""
+        try:
+            from upload_report import UploadError, upload_report
+        except ImportError as e:
+            logging.error(f"Report upload unavailable ({e})")
+            return
+        try:
+            upload_report(html_path)
+        except UploadError as e:
+            logging.error(f"{e} - report kept locally; re-run "
+                          "tools/report/upload_report.py --all to retry")
+
+    def _load_report_tokens(self) -> dict:
+        """Read the serial -> report token mapping out of the existing CSV."""
+        tokens = {}
+        if not self.csv_path.exists():
+            return tokens
+        try:
+            with open(self.csv_path, newline='') as f:
+                for row in csv.DictReader(f):
+                    # Rows written before the column existed simply have no token.
+                    serial_number, token = row.get("Serial"), row.get("Report Token")
+                    if serial_number and token:
+                        tokens[serial_number] = token
+        except Exception as e:
+            logging.warning(f"Failed to read report tokens from {self.csv_path}: {e}")
+        return tokens
+
+    def report_token(self, serial_number: str) -> str:
+        """The report token for a serial, generated once and stable across re-tests."""
+        if self._report_tokens is None:
+            self._report_tokens = self._load_report_tokens()
+        token = self._report_tokens.get(serial_number)
+        if token is None:
+            token = secrets.token_hex(REPORT_TOKEN_BYTES).upper()
+            self._report_tokens[serial_number] = token
+            logging.info(f"Generated report token for {serial_number}")
+        return token
+
+    def print_dut_label(self, serial_number: str, token: str, end_time_ms: int, duration_ms: int):
+        """Print the pass label for a DUT. Never fatal: a jammed printer shouldn't stop testing."""
+        try:
+            from dut_label import DutLabel, print_label
+        except ImportError as e:
+            logging.error(f"Label printing unavailable ({e}). Run test_host.py from the "
+                          "programAndTest venv (.venv/bin/python) to enable it.")
+            return
+
+        label = DutLabel(
+            serial=serial_number,
+            firmware=f"FW {self.fw_version}" if self.fw_version else "",
+            tested_at=datetime.fromtimestamp(end_time_ms / 1000).strftime("%Y-%m-%d %H:%M"),
+            duration=f"{duration_ms / 1000:.1f} s",
+            result="PASS",
+            qr_data=REPORT_URL_TEMPLATE.format(serial=serial_number, token=token),
+        )
+        try:
+            print_label(label)
+            logging.info(f"Printed label for {serial_number}")
+        except Exception as e:
+            logging.error(f"Failed to print label for {serial_number}: {e}")
+
     def record_test_result(self, end_time_ms: int, result: str, failure_details: str):
         """Append a completed test's result to the CSV, if a batch ID and serial number are known."""
         if not self.batch_id:
@@ -144,6 +329,7 @@ class TestHost:
 
         start_time_ms = self.current_test_start_time_ms
         duration_ms = end_time_ms - start_time_ms
+        report_token = self.report_token(self.serial_number)
         end_time_iso = datetime.fromtimestamp(end_time_ms / 1000).astimezone().isoformat()
 
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -163,9 +349,20 @@ class TestHost:
                 failure_details,
                 self.git_commit,
                 self.startup_time_ms,
+                self.fw_version or "",
+                report_token,
             ])
 
         logging.info(f"Logged test result to {self.csv_path}: {result} (serial={self.serial_number})")
+
+        # Reports and labels are both for shippable boards only; a failure is
+        # captured by the CSV row and the raw batch log.
+        if result == "PASS":
+            self.write_report(self.serial_number, report_token, end_time_ms, duration_ms)
+            if self.print_labels:
+                self.print_dut_label(self.serial_number, report_token,
+                                     end_time_ms, duration_ms)
+
         self.current_test_start_time_ms = None
 
     def connect(self):
@@ -212,8 +409,9 @@ class TestHost:
         """
         logging.info("Starting firmware upload (current bootloader + fixed old app via UPDI)...")
 
-        # Clear serial number from previous upload
+        # Clear serial number and firmware version from previous upload
         self.serial_number = None
+        self.fw_version = None
 
         # Dummy mode: simulate upload without actually running it
         if self.dummy:
@@ -305,6 +503,10 @@ class TestHost:
         """Process a command received from the ESP32."""
         line = line.strip()
 
+        # Datapoint lines are frequent and carry no commands; take them first.
+        if self.handle_report_line(line):
+            return
+
         if CMD_PING in line:
             logging.info(f"Received: {CMD_PING}")
             self.send_response(RESP_ACK)
@@ -334,11 +536,43 @@ class TestHost:
             except (ValueError, IndexError) as e:
                 logging.error(f"Failed to parse serial number from: {line} - {e}")
 
+        elif CMD_PROTOCOL_VERSION_PREFIX in line:
+            # Parse the I2C protocol version: >>PROTOCOL_VERSION:5<<
+            try:
+                start_idx = (line.index(CMD_PROTOCOL_VERSION_PREFIX)
+                             + len(CMD_PROTOCOL_VERSION_PREFIX))
+                version = line[start_idx:line.index("<<", start_idx)]
+                if re.fullmatch(r'\d+', version):
+                    self.protocol_version = version
+                    logging.info(f"Received protocol version: {version}")
+                else:
+                    logging.warning(f"Ignoring malformed protocol version: {version!r}")
+            except (ValueError, IndexError) as e:
+                logging.error(f"Failed to parse protocol version from: {line} - {e}")
+
+        elif CMD_FW_VERSION_PREFIX in line:
+            # Parse the installed firmware version: >>FW_VERSION:1.4<<
+            try:
+                start_idx = line.index(CMD_FW_VERSION_PREFIX) + len(CMD_FW_VERSION_PREFIX)
+                end_idx = line.index("<<", start_idx)
+                version = line[start_idx:end_idx]
+
+                if re.fullmatch(r'\d+\.\d+', version):
+                    self.fw_version = version
+                    logging.info(f"Received firmware version: {self.fw_version}")
+                else:
+                    logging.warning(f"Invalid firmware version format: {version}")
+            except (ValueError, IndexError) as e:
+                logging.error(f"Failed to parse firmware version from: {line} - {e}")
+
         elif CMD_TEST_START in line:
             logging.info(f"Received: {CMD_TEST_START}")
             # Reset per-test state so a stale serial number from a prior unit can't
             # be attributed to this one if this test fails before re-reading it.
             self.serial_number = None
+            self.fw_version = None
+            self.protocol_version = None
+            self.phases = []
             self.current_test_start_time_ms = int(time.time() * 1000)
 
         elif CMD_TEST_RESULT_PREFIX in line:
@@ -426,6 +660,16 @@ def main():
         action="store_true",
         help="Dummy mode: simulate firmware uploads without actually running them"
     )
+    parser.add_argument(
+        "--no-labels",
+        action="store_true",
+        help="Don't print a label for passing boards"
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Don't publish reports to qc.bezeklabs.com (still written locally)"
+    )
 
     args = parser.parse_args()
 
@@ -440,7 +684,9 @@ def main():
     batch_id = input("Batch ID (leave empty to disable CSV result logging): ").strip()
 
     # Create and run test host
-    test_host = TestHost(args.port, args.updi_port, args.baud, args.dummy, batch_id)
+    test_host = TestHost(args.port, args.updi_port, args.baud, args.dummy, batch_id,
+                         print_labels=not args.no_labels,
+                         upload_reports=not args.no_upload)
 
     try:
         test_host.connect()

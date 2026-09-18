@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FaderBuddy QC &mdash; How every board is tested</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg:      #f6f6f4;
+    --card:    #ffffff;
+    --ink:     #16181c;
+    --ink-dim: #5d636e;
+    --ink-faint:#8b919c;
+    --rule:    #e3e4e2;
+    --pass:    #157f3d;
+    --pass-bg: #e7f4ec;
+    --radius:  10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg:      #131417;
+      --card:    #1b1d21;
+      --ink:     #e8e9ea;
+      --ink-dim: #a0a6b0;
+      --ink-faint:#71777f;
+      --rule:    #2a2d33;
+      --pass:    #4ec27c;
+      --pass-bg: #16301f;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap {
+    max-width: 660px;
+    margin: 0 auto;
+    padding: 20px 16px 48px;
+  }
+
+  header { padding: 24px 0 18px; }
+  .mark {
+    font-size: 27px; font-weight: 700; letter-spacing: -.015em; line-height: 1;
+  }
+  .mark span { color: var(--ink-faint); font-weight: 400; }
+  .tagline {
+    margin-top: 5px; font-size: 13px; color: var(--ink-dim);
+    text-transform: uppercase; letter-spacing: .09em;
+  }
+
+  .intro {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px;
+    font-size: 13.5px; line-height: 1.55; color: var(--ink-dim);
+  }
+  .intro p { margin: 0 0 10px; }
+  .intro p:last-child { margin-bottom: 0; }
+  .intro a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+  .intro .sig { color: var(--ink); }
+
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--ink-dim); margin: 26px 0 10px; font-weight: 600;
+  }
+  .section-note {
+    font-size: 13px; color: var(--ink-faint); margin: -4px 0 12px; line-height: 1.45;
+  }
+
+  /* A vertical (9:16) video, capped so it doesn't tower on a desktop window. */
+  .video { max-width: 330px; margin: 0 auto; }
+  .video .frame {
+    position: relative; aspect-ratio: 9 / 16; overflow: hidden;
+    border-radius: var(--radius); border: 1px solid var(--rule);
+    background: var(--card);
+  }
+  .video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .video .caption {
+    text-align: center; font-size: 12.5px; color: var(--ink-faint); margin-top: 9px;
+  }
+
+  /* Same card as a report's test phase, holding a list instead of readings. */
+  .card {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: var(--radius); padding: 6px 18px; margin-bottom: 10px;
+  }
+  .card ul { margin: 0; padding: 0; list-style: none; }
+  .card li {
+    padding: 11px 0; border-bottom: 1px solid var(--rule);
+    font-size: 13.5px; line-height: 1.5; color: var(--ink-dim);
+  }
+  .card li:last-child { border-bottom: 0; }
+  .card li b { color: var(--ink); font-weight: 600; }
+
+  footer {
+    margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rule);
+    color: var(--ink-faint); font-size: 12.5px; text-align: center;
+  }
+  footer .who { color: var(--ink-dim); }
+  footer a { color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark">FaderBuddy<span> QC</span></div>
+    <div class="tagline">How every board is tested</div>
+  </header>
+
+  <section class="intro">
+    <p>Every FaderBuddy board sold by Bezek Labs LLC is tested on a real 60&nbsp;mm motor fader before it
+    ships.</p>
+    <p>The board drops into the fixture and a clamp presses it down onto pogo
+    pins. Those pins carry power, the fader&rsquo;s motor and position wiring,
+    and the I2C lines. From there the fixture programs the board, then talks to
+    it the same way your own controller will.</p>
+    <p>As the board is tested, the ESP32 host records and validates its behavior, which ultimately gets
+      archived as a test report; see a (real) test report <a href="https://qc.bezeklabs.com/faderbuddy/304C55334A55F8FF4126-E342C59689A13208A33F27F0224DE903">here</a>.
+    </p>
+  </section>
+
+  <!--
+  <div class="video">
+    <div class="frame">
+      <iframe src="https://www.youtube-nocookie.com/embed/VIDEO_ID"
+              title="FaderBuddy production test fixture"
+              loading="lazy" allowfullscreen
+              allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture"></iframe>
+    </div>
+    <div class="caption">One board going through the whole test.</div>
+  </div>
+-->
+
+  <h2>What gets tested</h2>
+  <div class="card">
+    <ul>
+      <li>Current draw and supply voltage on both power rails</li>
+      <li>The power LED and the status LED</li>
+      <li>Programming the chip, and updating its firmware over I2C</li>
+      <li>Motor movement, position feedback, and self-calibration</li>
+      <li>Touch sensing on the fader cap</li>
+    </ul>
+  </div>
+
+  <h2>What&rsquo;s in the fixture</h2>
+  <div class="card">
+    <ul>
+      <li><b>A real motor fader.</b> A Soundwell 60&nbsp;mm unit, the same part the
+      board is made for. Nothing is simulated.</li>
+      <li><b>Pogo pins.</b> One set connects the board to the fader. Another set
+      connects its I2C pins to the test host.</li>
+      <li><b>An ESP32.</b> This is the host for the test. It sends commands to the
+      board, reads back what happened, and decides pass or fail.</li>
+      <li><b>A servo and a spring metal contact.</b> The servo swings the contact
+      onto the fader cap and off again. That is how the touch sensing gets
+      tested, in place of a finger.</li>
+      <li><b>An INA3221 power meter.</b> Watches current and voltage on the
+      3.3&nbsp;V and 5&nbsp;V supplies throughout the test.</li>
+      <li><b>Polyfuses on both supplies.</b> A board with a short circuit trips
+      them instead of damaging the fixture.</li>
+      <li><b>An Adafruit UPDI Friend.</b> Loads the first firmware onto a blank
+      chip.</li>
+      <li><b>An Adafruit CH334F USB hub.</b> Puts the test host and the programmer
+      on one cable to the computer.</li>
+      <li><b>A thermal printer.</b> Prints the label for each board that
+      passes, using a protocol reverse-engineered from the vendor&rsquo;s browser extension.</li>
+    </ul>
+  </div>
+
+  <footer>
+    <div class="who">Bezek Labs</div>
+    <div>designed / tested in oakland, ca</div>
+  </footer>
+</div>
+</body>
+</html>

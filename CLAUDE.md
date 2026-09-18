@@ -38,6 +38,10 @@ FaderBuddy is a bidirectional motor fader control system with integrated capacit
   - `factory_test_images/` - The fixed old application the jig flashes before
     exercising an I2C update. Applications only - the bootloader is built from
     source on every run so production never ships a stale one
+  - `tools/label_printer.py` - Minimal TSPL-over-USB driver for the ORGSTA T001
+    thermal label printer, and `tools/dut_label.py` - the per-DUT label layout.
+    Reimplements only what the vendor's Chrome extension does: bulk-write a TSPL
+    job to the printer-class interface. Also usable standalone as CLIs
 - **ci/** - Python scripts for electronics export (JLCPCB files, PDFs, renders)
   - Automated workflow for PCB fabrication files, S3 upload
 
@@ -146,6 +150,44 @@ source ~/.platformio/penv/bin/activate
 You can use PlatformIO commands to build, upload, and view the serial monitor; just cd into the production_tools/programAndTest directory before running these commands.
 
 e.g. `source ~/.platformio/penv/bin/activate && cd production_tools/programAndTest && pio run --target upload`
+
+### Test host and DUT labels
+
+`test_host.py` needs its own venv (PlatformIO's is separate), because label
+printing pulls in pyusb, Pillow and qrcode:
+
+```bash
+cd production_tools/programAndTest
+python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
+.venv/bin/python test_host.py --port /dev/ttyUSB0      # --no-labels to skip printing
+```
+
+Every passing board gets a 2x1 inch label printed automatically. Each serial
+also gets a random **report salt**, generated once and reused on a re-test by
+looking it up in `logs/results.csv`, so the QR's report URL can't be walked from
+a sequential serial alone. A missing or jammed printer logs an error and never
+fails a test.
+
+Iterate on the label design without wasting stock - `--preview` renders a PNG
+instead of printing:
+
+```bash
+.venv/bin/python tools/dut_label.py AABBCCDDEEFF00112233 --firmware "FW 1.4" \
+  --tested-at "2026-09-16 22:47" --duration "42.1 s" --result PASS \
+  --preview /tmp/label.png
+
+.venv/bin/python tools/label_printer.py info        # confirm the printer is found
+.venv/bin/python tools/label_printer.py raw --text 'SIZE 50.8 mm,25.4 mm
+GAP 2 mm,0 mm
+CLS
+BOX 8,8,397,194,2
+PRINT 1,1'
+```
+
+The printer's origin sits a little inside the physical label: a box inset 8 dots
+(1mm) prints fully on all four edges, one at 0 loses its right and bottom lines,
+so the layout keeps a 16-dot safe margin. The first label after power-on is
+often mis-registered vertically.
 
 
 ### Electronics Export

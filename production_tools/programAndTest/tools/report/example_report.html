@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FaderBuddy 304E4C33444341B80A1E — Test Report</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg:      #f6f6f4;
+    --card:    #ffffff;
+    --ink:     #16181c;
+    --ink-dim: #5d636e;
+    --ink-faint:#8b919c;
+    --rule:    #e3e4e2;
+    --pass:    #157f3d;
+    --pass-bg: #e7f4ec;
+    --fail:    #b4232a;
+    --fail-bg: #fbeceb;
+    --bar:     #d6d8d5;
+    --track-ok:  #6bb98d;
+    --track-bad: #e0bcb9;
+    --accent:  #16181c;
+    --radius:  10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg:      #131417;
+      --card:    #1b1d21;
+      --ink:     #e8e9ea;
+      --ink-dim: #a0a6b0;
+      --ink-faint:#71777f;
+      --rule:    #2a2d33;
+      --pass:    #4ec27c;
+      --pass-bg: #16301f;
+      --fail:    #f28b86;
+      --fail-bg: #331a1a;
+      --bar:     #2f333a;
+      --track-ok:  #4f9b73;
+      --track-bad: #5e4240;
+      --accent:  #e8e9ea;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap {
+    max-width: 660px;
+    margin: 0 auto;
+    padding: 20px 16px 48px;
+  }
+
+  /* Remove this banner in generated reports. */
+  .sample {
+    background: #fff6d6; color: #6b5300; border-bottom: 1px solid #e8d89a;
+    font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+    text-align: center; padding: 7px 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .sample { background: #332b12; color: #e3c979; border-bottom-color: #4d411c; }
+  }
+
+  header { padding: 24px 0 18px; }
+  .mark {
+    font-size: 27px; font-weight: 700; letter-spacing: -.015em; line-height: 1;
+  }
+  .mark span { color: var(--ink-faint); font-weight: 400; }
+  .tagline {
+    margin-top: 5px; font-size: 13px; color: var(--ink-dim);
+    text-transform: uppercase; letter-spacing: .09em;
+  }
+
+  .intro {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px;
+    font-size: 13.5px; line-height: 1.55; color: var(--ink-dim);
+  }
+  .intro p { margin: 0 0 10px; }
+  .intro p:last-child { margin-bottom: 0; }
+  .intro a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+  .intro .sig { color: var(--ink); }
+
+  .verdict {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: var(--radius); padding: 18px; margin-bottom: 14px;
+  }
+  .verdict-top {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding-bottom: 14px; border-bottom: 1px solid var(--rule);
+  }
+  .badge {
+    font-size: 15px; font-weight: 700; letter-spacing: .07em;
+    padding: 5px 12px; border-radius: 999px;
+  }
+  .badge.pass { color: var(--pass); background: var(--pass-bg); }
+  .badge.fail { color: var(--fail); background: var(--fail-bg); }
+  .verdict-top .of { color: var(--ink-dim); font-size: 14px; }
+
+  dl.meta {
+    display: grid; grid-template-columns: 1fr; gap: 0; margin: 0; padding-top: 4px;
+  }
+  dl.meta > div {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--rule);
+  }
+  dl.meta > div:last-child { border-bottom: 0; padding-bottom: 0; }
+  dl.meta dt {
+    color: var(--ink-dim); font-size: 13px; white-space: nowrap;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  dl.meta dd {
+    margin: 0; text-align: right; font-variant-numeric: tabular-nums;
+  }
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13.5px; word-break: break-all;
+  }
+
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--ink-dim); margin: 26px 0 10px; font-weight: 600;
+  }
+  .section-note {
+    font-size: 13px; color: var(--ink-faint); margin: -4px 0 12px; line-height: 1.45;
+  }
+
+  .phase {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: var(--radius); margin-bottom: 10px; overflow: hidden;
+  }
+  .phase-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 13px 16px; border-bottom: 1px solid var(--rule);
+  }
+  .phase-head .name { font-weight: 600; flex: 1; }
+  .phase-head .dur { color: var(--ink-faint); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .tick { font-size: 13px; font-weight: 700; color: var(--pass); }
+  .tick.fail { color: var(--fail); }
+  .phase.skipped .phase-head .name { color: var(--ink-dim); }
+
+  .phase-note {
+    padding: 10px 16px 0; font-size: 12.5px; line-height: 1.45;
+    color: var(--ink-faint);
+  }
+  .rows { padding: 4px 16px 12px; }
+  .row { padding: 10px 0 11px; border-bottom: 1px solid var(--rule); }
+  .row:last-child { border-bottom: 0; }
+  .row-top {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  .row .label { color: var(--ink-dim); font-size: 13.5px; }
+  .row .val { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .row .val .unit { font-weight: 400; color: var(--ink-dim); font-size: 12.5px; margin-left: 2px; }
+  .limits {
+    display: flex; justify-content: space-between;
+    font-size: 11.5px; color: var(--ink-faint);
+    font-variant-numeric: tabular-nums; margin-top: 4px;
+  }
+  .limits .pass-range { color: var(--pass); }
+  /* The track spans the measurement's full meaningful range, so the passing
+     window is visible in proportion to everything the sensor could read.
+     The rail is drawn once across the whole axis and the passing window sits
+     on top of it, so the two failing sides can't disagree with each other. */
+  .track {
+    position: relative; height: 10px; margin-top: 8px;
+  }
+  .track .rail {
+    position: absolute; left: 0; right: 0; top: 3.5px; height: 3px;
+    background: var(--track-bad); border-radius: 1.5px;
+  }
+  .track .ok {
+    position: absolute; top: 0; height: 10px;
+    background: var(--track-ok); border-radius: 2.5px;
+  }
+  .track .at {
+    position: absolute; top: -3px; width: 2px; height: 16px; margin-left: -1px;
+    background: var(--accent); border-radius: 1px;
+  }
+  /* A reading outside the window marks itself, so a failing row is legible
+     from the track alone rather than only from the phase's tick. */
+  .track .at.out { background: var(--fail); }
+  .note { font-size: 12.5px; color: var(--ink-faint); margin-top: 5px; }
+
+  table.cal { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.cal th, table.cal td {
+    padding: 9px 8px; border-bottom: 1px solid var(--rule); text-align: right;
+  }
+  table.cal th:first-child, table.cal td:first-child { text-align: left; }
+  table.cal thead th {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--ink-dim); font-weight: 600;
+  }
+  table.cal td:first-child { color: var(--ink-dim); font-size: 13.5px; }
+  table.cal tbody tr:last-child th, table.cal tbody tr:last-child td { border-bottom: 0; }
+  .cal-wrap { background: var(--card); border: 1px solid var(--rule);
+              border-radius: var(--radius); padding: 6px 16px; }
+  .cal-note { font-size: 12.5px; color: var(--ink-faint); padding: 10px 0 4px; }
+
+  footer {
+    margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rule);
+    color: var(--ink-faint); font-size: 12.5px; text-align: center;
+  }
+  footer .who { color: var(--ink-dim); }
+  footer a.raw {
+    display: inline-block; margin-bottom: 14px;
+    color: var(--ink-dim); text-decoration: none;
+    border: 1px solid var(--rule); border-radius: 999px;
+    padding: 6px 14px; font-size: 12.5px; background: var(--card);
+  }
+  footer a.raw:hover { color: var(--ink); border-color: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="sample">Sample data &mdash; for layout review</div>
+<div class="wrap">
+  <header>
+    <div class="mark">FaderBuddy<span> QC</span></div>
+    <div class="tagline">Factory test report</div>
+  </header>
+
+  <section class="intro">
+    <p>Your FaderBuddy PCB was fully tested, with real motor fader hardware
+    attached, to make sure it meets my high quality bar. Every measurement below
+    was taken on your device, and is tied to the microcontroller’s unique serial
+    number (<span class="mono">304E4C33444341B80A1E</span>).</p>
+    <p>Learn more about the testing process
+    <a href="https://qc.bezeklabs.com/faderbuddy/index.html">here</a>. If you
+    have any questions please don’t hesitate to reach out!</p>
+    <p class="sig">—Scott<br>
+    <a href="mailto:scott@bezeklabs.com">scott@bezeklabs.com</a></p>
+  </section>
+
+  <section class="verdict">
+    <div class="verdict-top">
+      <span class="badge pass">PASS</span>
+      <span class="of">9 of 9 checks passed</span>
+    </div>
+    <dl class="meta">
+      <div><dt>Serial</dt><dd><span class="mono">304E4C33444341B80A1E</span></dd></div>
+      <div><dt>Tested</dt><dd>17 Sep 2026, 08:19 PDT</dd></div>
+      <div><dt>Duration</dt><dd>58.4 s</dd></div>
+      <div><dt>Firmware</dt><dd>1.4 <span style="color:var(--ink-faint)">(protocol v5)</span></dd></div>
+    </dl>
+  </section>
+
+  <h2>Basic power draw</h2>
+
+  <div class="section-note">This checks for any major faults on the PCB, like short circuits or high idle current that might indicate a failed component. Voltage is a sanity check of the jig’s power supplies during the current draw test.</div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Logic power</span><span class="dur">1.1 s</span></div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Quiescent current</span><span class="val">7.6<span class="unit">mA</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:40%"></div><div class="at" style="left:30.4%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 15</span><span>25</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">3V3 rail voltage</span><span class="val">3.288<span class="unit">V</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:86.11%;right:2.778%"></div><div class="at" style="left:91.33%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass 3.1&ndash;3.5</span><span>3.6</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Motor power</span><span class="dur">1.1 s</span></div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Idle current</span><span class="val">0.8<span class="unit">mA</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:60%"></div><div class="at" style="left:3.2%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 10</span><span>25</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">5V rail voltage</span><span class="val">4.613<span class="unit">V</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:71.67%;right:8.333%"></div><div class="at" style="left:76.88%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass 4.3&ndash;5.5</span><span>6</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Device functionality</h2>
+
+  <div class="section-note">This checks that every major feature functions, with real motor fader hardware attached.</div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Power LED</span><span class="dur">0.1 s</span></div>
+    <div class="phase-note">Ensures power LED is present and lit, using a photodiode.</div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Photodiode reading</span><span class="val">2032<span class="unit">ADC</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:31.62%"></div><div class="at" style="left:49.62%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 2800</span><span>4095</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Firmware bootstrap (UPDI)</span><span class="dur">25.5 s</span></div>
+    <div class="phase-note" style="padding-bottom:14px">Ensures firmware can be uploaded successfully over UPDI and installs the bootloader to support firmware updates.</div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Firmware update over I2C</span><span class="dur">15.4 s</span></div>
+    <div class="phase-note">Ensures the bootloader functions and allows for firmware updates over I2C, for in-place firmware updates without a dedicated UPDI programmer.</div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Pages written</span><span class="val">232<span class="unit">pages</span></span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Image CRC16</span><span class="val mono">0x234E</span></div>
+        <div class="note">Read back from flash and matched against the packaged image.</div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Version after update</span><span class="val">1.4</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Debug LED</span><span class="dur">1.4 s</span></div>
+    <div class="phase-note">Ensures debug LED is present and blinks at the expected heartbeat rate of the base firmware.</div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Blink transitions in 2.5 s</span><span class="val">4</span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:40%;right:40%"></div><div class="at" style="left:40%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass 4&ndash;6</span><span>10</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Self-calibration</span><span class="dur">9.7 s</span></div>
+    <div class="phase-note">Ensures motor control and potentiometer feedback work for closed-loop control, and tests motor characterization.</div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Travel minimum</span><span class="val">50<span class="unit">ADC</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:95.11%"></div><div class="at" style="left:2.443%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 100</span><span>2047</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Travel maximum</span><span class="val">2018<span class="unit">ADC</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:92.82%;right:0%"></div><div class="at" style="left:98.58%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &ge; 1900</span><span>2047</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Usable span</span><span class="val">1968<span class="unit">ADC</span></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Movement</span><span class="dur">1.8 s</span></div>
+    <div class="phase-note">Ensures fader can move to precise locations and settles quickly.</div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Position A settle time</span><span class="val">433<span class="unit">ms</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:9.091%"></div><div class="at" style="left:13.12%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 3000</span><span>3300</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Position B settle time</span><span class="val">525<span class="unit">ms</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:9.091%"></div><div class="at" style="left:15.91%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 3000</span><span>3300</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Position C settle time</span><span class="val">444<span class="unit">ms</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:9.091%"></div><div class="at" style="left:13.45%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 3000</span><span>3300</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Worst settled position error</span><span class="val">2<span class="unit">/255</span></span></div>
+        <div class="note">Informational only.</div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Peak motor current</span><span class="val">216.8<span class="unit">mA</span></span></div>
+        <div class="note">Informational only.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="tick">&#10003;</span><span class="name">Touch sensor</span><span class="dur">2.4 s</span></div>
+    <div class="phase-note">Ensures capacitive touch detection on fader cap works.</div>
+    <div class="rows">
+      <div class="row">
+        <div class="row-top"><span class="label">Untouched reference</span><span class="val">506<span class="unit">units</span></span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Delta when touched</span><span class="val">Δ344<span class="unit">units</span></span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Detect latency</span><span class="val">176<span class="unit">ms</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:9.091%"></div><div class="at" style="left:5.333%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 3000</span><span>3300</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Release latency</span><span class="val">174<span class="unit">ms</span></span></div>
+        <div class="track"><div class="rail"></div><div class="ok" style="left:0%;right:9.091%"></div><div class="at" style="left:5.273%"></div></div>
+        <div class="limits"><span>0</span><span class="pass-range">pass &le; 3000</span><span>3300</span></div>
+      </div>
+      <div class="row">
+        <div class="row-top"><span class="label">Auto-recalibrations</span><span class="val">1</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Motor characterization</h2>
+  <div class="section-note">Note: characterization parameters are informational
+  only and derived for the test jig motor fader only; self-calibration should be
+  re-run with your motor fader once installed.</div>
+  <div class="cal-wrap">
+    <table class="cal">
+      <thead>
+        <tr><th>Measured</th><th>Toward motor</th><th>Away</th><th>Unit</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Breakaway duty</td><td>62</td><td>89</td><td>/255</td></tr>
+        <tr><td>Speed per duty</td><td>17</td><td>37</td><td>ADC/s</td></tr>
+        <tr><td>Stribeck jump</td><td>690</td><td>514</td><td>ADC/s</td></tr>
+      </tbody>
+    </table>
+    <div class="cal-note">Derived gains now running on this unit: velocity floor 862&nbsp;ADC/s, deadband 13&nbsp;ADC.</div>
+  </div>
+
+  <footer>
+    <div class="who">Bezek Labs</div>
+    <div>designed / tested in oakland, ca</div>
+  </footer>
+</div>
+</body>
+</html>

@@ -134,6 +134,27 @@ struct TestTracking {
   uint32_t testStartTime;
   uint8_t diagnosticsMovementStep;
 
+  // Datapoint reporting: when the current phase was entered, so PHASE_END can
+  // carry its elapsed time.
+  uint32_t phaseStartTime;
+
+  // Peak motor-rail draw seen while the fader is actually being driven. Reset
+  // when self-calibration starts, reported when the movement checks finish, so
+  // it covers the whole of the heavy driving.
+  float peakMotorCurrentMa;
+
+  // Movement checks: how long each commanded move took to settle, and how far
+  // off the commanded position it ended up. Both were previously measured only
+  // against a timeout and then discarded.
+  uint16_t settleMs[3];
+  uint8_t settleError[3];
+
+  // Touch checks: latency from servo actuation to detect, and from servo
+  // release to clear, plus the delta seen while touched.
+  uint16_t touchDetectMs;
+  uint16_t touchReleaseMs;
+  int16_t touchDeltaAtTouch;
+
   // Power test accumulators
   float v0Sum;
   float i0Sum;
@@ -165,7 +186,7 @@ struct TestTracking {
   uint32_t selfCalStartTime;
   bool selfCalRequestSent;
   bool selfCalEnteredMode;
-  uint16_t selfCalMinADC;
+  uint16_t selfCalMinADC = 0xFFFF;  // Sentinel for "no sample yet"
   uint16_t selfCalMaxADC;
 
   // Touch sensor test tracking
@@ -205,10 +226,12 @@ struct TestTracking {
   uint32_t bootloadStepStartTime;
   uint32_t bootloadPageIndex;
   uint32_t bootloadTotalPages;
-  // (bootload fields intentionally left off the initializer below -- an
-  // aggregate value-initializes any trailing members not listed, so they
-  // start at 0 / BL_STEP_ENTER_CMD, same as if explicitly zeroed.)
-} testTracking = {0, 0, 0, 0, 0, 0, 0, TestTracking::FIRMWARE_PHASE_PING, 0, false, {0}, 0, 0, 0, false, 0, false, false, 0xFFFF, 0, TestTracking::TOUCH_PHASE_CHECK_NO_TOUCH, 0, ""};
+  // No aggregate initializer: this has static storage duration, so every member
+  // is zero-initialized (which is the right start for all of them - the phase
+  // enums both begin at 0), and the one member wanting a non-zero default
+  // declares it inline above. A positional list here silently went wrong every
+  // time a field was inserted.
+} testTracking;
 
 void setup() {
   pinMode(PIN_LED_RED, OUTPUT);
@@ -310,6 +333,115 @@ const char* getModeString(uint8_t mode) {
     case MODE_SELF_CALIBRATION: return "SELF_CAL";
     default: return "UNKNOWN";
   }
+}
+
+// ============================================================================
+// Machine-readable datapoint reporting (parsed by test_host.py)
+// ============================================================================
+//
+//   >>PHASE_START:<phase><<
+//   >>DATA:<phase>:<key>=<value>:<unit>:<min>:<max>:<axis_lo>:<axis_hi><<
+//   >>PHASE_END:<phase>:<PASS|FAIL>:<elapsed_ms><<
+//
+// Limits travel with the value, so the host never has to duplicate the pass
+// criteria enforced here; an empty min or max means that side is unbounded.
+// Adding a datapoint is then a firmware-only change - the report renders
+// whatever arrives without knowing what any of it means.
+//
+// axis_lo/axis_hi are the full meaningful range of the measurement, which is
+// what the report plots the value against so the passing window is visible in
+// proportion to everything the sensor could have read. Only the firmware knows
+// these (an ADC's full scale, a timeout's ceiling), so they are reported rather
+// than guessed host-side. Both may be empty, in which case the host falls back
+// to the limits.
+//
+// These sit alongside the existing human-readable prints rather than replacing
+// them: the serial log is still what you read when debugging at the bench.
+
+void reportPhaseStart(const char* phase) {
+  Serial.printf(">>PHASE_START:%s<<\n", phase);
+}
+
+void reportPhaseEnd(const char* phase, bool passed, uint32_t elapsedMs) {
+  Serial.printf(">>PHASE_END:%s:%s:%lu<<\n", phase, passed ? "PASS" : "FAIL",
+                (unsigned long)elapsedMs);
+}
+
+void reportDataF(const char* phase, const char* key, float value, uint8_t decimals,
+                 const char* unit, const char* lo, const char* hi,
+                 const char* axisLo = "", const char* axisHi = "") {
+  Serial.printf(">>DATA:%s:%s=%.*f:%s:%s:%s:%s:%s<<\n", phase, key, decimals, value, unit,
+                lo, hi, axisLo, axisHi);
+}
+
+void reportDataI(const char* phase, const char* key, long value,
+                 const char* unit, const char* lo, const char* hi,
+                 const char* axisLo = "", const char* axisHi = "") {
+  Serial.printf(">>DATA:%s:%s=%ld:%s:%s:%s:%s:%s<<\n", phase, key, value, unit,
+                lo, hi, axisLo, axisHi);
+}
+
+void reportDataStr(const char* phase, const char* key, const char* value) {
+  Serial.printf(">>DATA:%s:%s=%s:::::<<\n", phase, key, value);
+}
+
+// Stable machine name for a test state, or nullptr for states that aren't a
+// measured phase (idle, passed, failed).
+const char* getTestPhaseKey(TestState state) {
+  switch (state) {
+    case TEST_LOGIC_POWER: return "LOGIC_POWER";
+    case TEST_MOTOR_POWER: return "MOTOR_POWER";
+    case TEST_POWER_LED: return "POWER_LED";
+    case TEST_FW_BOOTSTRAP: return "FW_BOOTSTRAP";
+    case TEST_FW_I2C_UPDATE: return "FW_I2C_UPDATE";
+    case TEST_DEBUG_LED: return "DEBUG_LED";
+    case TEST_SELF_CALIBRATION: return "SELF_CALIBRATION";
+    case TEST_DIAGNOSTICS: return "MOVEMENT";
+    case TEST_TOUCH_SENSOR: return "TOUCH_SENSOR";
+    default: return nullptr;
+  }
+}
+
+// Read REG_MOTOR_CAL and report what self-calibration measured about this
+// unit's motor. Diagnostic only - nothing here is a pass/fail criterion, but
+// it is the most genuinely per-unit data the board can report, and it is what
+// makes a stiff or sloppy fader recognisable months later.
+void reportMotorCal() {
+  const char* PH = "MOTOR_CAL";
+  uint32_t started = millis();
+  uint8_t cal[12];
+
+  reportPhaseStart(PH);
+  if (!faderBuddy.readMotorCal(cal)) {
+    Serial.println("Failed to read motor characterisation (REG_MOTOR_CAL)");
+    reportPhaseEnd(PH, false, millis() - started);
+    return;
+  }
+
+  // Layout per i2c_data.h: valid, breakaway r/f, k r/f, v_jump r/f (u16 BE),
+  // vel_min (u16 BE), deadband.
+  uint16_t vjumpRising = ((uint16_t)cal[5] << 8) | cal[6];
+  uint16_t vjumpFalling = ((uint16_t)cal[7] << 8) | cal[8];
+  uint16_t velMin = ((uint16_t)cal[9] << 8) | cal[10];
+
+  reportDataI(PH, "cal_valid", cal[0], "", "1", "1");
+  reportDataI(PH, "breakaway_rising", cal[1], "/255", "", "", "0", "255");
+  reportDataI(PH, "breakaway_falling", cal[2], "/255", "", "", "0", "255");
+  reportDataI(PH, "k_rising", cal[3], "ADC/s", "", "");
+  reportDataI(PH, "k_falling", cal[4], "ADC/s", "", "");
+  reportDataI(PH, "vjump_rising", vjumpRising, "ADC/s", "", "");
+  reportDataI(PH, "vjump_falling", vjumpFalling, "ADC/s", "", "");
+  reportDataI(PH, "vel_min", velMin, "ADC/s", "", "");
+  reportDataI(PH, "deadband", cal[11], "ADC", "", "");
+
+  Serial.printf("Motor cal: valid=%u breakaway=%u/%u k=%u/%u vjump=%u/%u "
+                "vel_min=%u deadband=%u\n",
+                cal[0], cal[1], cal[2], cal[3], cal[4],
+                vjumpRising, vjumpFalling, velMin, cal[11]);
+
+  // cal_valid == 0 means the unit is running compiled-in defaults rather than
+  // its own measurement, which is worth surfacing even though no check fails.
+  reportPhaseEnd(PH, cal[0] == 1, millis() - started);
 }
 
 const String getTestStateName(TestState state) {
@@ -561,6 +693,9 @@ bool testLogicPower(float v0, float i0) {
   Serial.print(avgI0, 2);
   Serial.println("mA");
 
+  reportDataF("LOGIC_POWER", "logic_voltage", avgV0, 3, "V", "3.1", "3.5", "0", "3.6");
+  reportDataF("LOGIC_POWER", "logic_current", avgI0, 2, "mA", "", "15.0", "0", "25");
+
   // Check ranges: 3.1-3.5V, 5-15mA
   if (avgV0 < 3.1 || avgV0 > 3.5) {
     testTracking.failedTestName = "LOG VOLT";
@@ -602,6 +737,9 @@ bool testMotorPower(float v1, float i1) {
   Serial.print(avgI1, 2);
   Serial.println("mA");
 
+  reportDataF("MOTOR_POWER", "motor_voltage", avgV1, 3, "V", "4.3", "5.5", "0", "6.0");
+  reportDataF("MOTOR_POWER", "motor_idle_current", avgI1, 2, "mA", "", "10.0", "0", "25");
+
   // Check ranges: 4.3-5.5V, 0-10mA
   if (avgV1 < 4.3 || avgV1 > 5.5) {
     testTracking.failedTestName = "MOT VOLT";
@@ -621,6 +759,9 @@ bool testPowerLED() {
 
   Serial.print("Power LED - Photodiode ADC: ");
   Serial.println(pwr_led);
+
+  // Lower reading = brighter LED, so this is an upper bound.
+  reportDataI("POWER_LED", "power_led_adc", pwr_led, "ADC", "", "2800", "0", "4095");
 
   if (pwr_led >= 2800) {
     testTracking.failedTestName = "PWR LED";
@@ -1005,6 +1146,24 @@ bool testFwI2cUpdate() {
                 BOOTLOAD_FAIL("FW BL NEWVER");
               }
               Serial.println("PASSED: I2C bootloader update to current application succeeded");
+              reportDataI("FW_I2C_UPDATE", "pages_written", testTracking.bootloadTotalPages,
+                          "pages", "", "");
+              {
+                char crcHex[8];
+                snprintf(crcHex, sizeof(crcHex), "0x%04X", FADER_APP_IMAGE_CRC16);
+                reportDataStr("FW_I2C_UPDATE", "image_crc16", crcHex);
+                char ver[12];
+                snprintf(ver, sizeof(ver), "%u.%u", fw >> 8, fw & 0xFF);
+                reportDataStr("FW_I2C_UPDATE", "version_after", ver);
+              }
+              // Report the version the DUT actually reports back (not just the
+              // compile-time constant) so the host can log what shipped on this
+              // board. REG_FW_VERSION is packed (major << 8) | minor.
+              Serial.print(">>FW_VERSION:");
+              Serial.print(fw >> 8);
+              Serial.print(".");
+              Serial.print(fw & 0xFF);
+              Serial.println("<<");
               testTracking.firmwarePhase = TestTracking::FIRMWARE_PHASE_READ_SERIAL;
               testTracking.firmwarePhaseStartTime = millis();
             }
@@ -1114,6 +1273,9 @@ bool testDebugLED() {
   Serial.print("Debug LED test complete. Transitions: ");
   Serial.println(testTracking.debugLedTransitionCount);
 
+  reportDataI("DEBUG_LED", "led_transitions", testTracking.debugLedTransitionCount,
+              "", "4", "6", "0", "10");
+
   if (testTracking.debugLedTransitionCount < MIN_TRANSITIONS) {
     testTracking.failedTestName = "DBG LED FEW";
     Serial.print("FAILED: Too few transitions (");
@@ -1141,6 +1303,9 @@ void readFaderBuddyVersionInfo() {
   if (faderBuddy.readProtocolVersion(versionInfo.protocolVersion)) {
     Serial.print("Motor Fader Protocol Version: ");
     Serial.println(versionInfo.protocolVersion);
+    // Reported to the host the same way FW_VERSION is, so the test report can
+    // record what the board actually answered rather than a compiled-in guess.
+    Serial.printf(">>PROTOCOL_VERSION:%u<<\n", versionInfo.protocolVersion);
 
     // Require a valid app protocol version (see i2c_data.h REG_VERSION: >= 5 is
     // an app; BL_VERSION_MARKER/0xFF mean bootloader-resident/no response).
@@ -1215,6 +1380,9 @@ bool testSelfCalibration() {
     testTracking.selfCalEnteredMode = false;
     testTracking.selfCalMinADC = 0xFFFF;  // Start with max value
     testTracking.selfCalMaxADC = 0;       // Start with min value
+    // Self-calibration is the first time the motor is driven hard, so start the
+    // peak-current window here; the movement checks report it.
+    testTracking.peakMotorCurrentMa = 0;
     Serial.println("Starting self-calibration test (8 seconds max)...");
   }
 
@@ -1285,6 +1453,14 @@ bool testSelfCalibration() {
     Serial.print(" - ");
     Serial.println(testTracking.selfCalMaxADC);
 
+    reportDataI("SELF_CALIBRATION", "travel_min_adc", testTracking.selfCalMinADC,
+                "ADC", "", "100", "0", "2047");
+    reportDataI("SELF_CALIBRATION", "travel_max_adc", testTracking.selfCalMaxADC,
+                "ADC", "1900", "", "0", "2047");
+    reportDataI("SELF_CALIBRATION", "travel_span_adc",
+                (long)testTracking.selfCalMaxADC - (long)testTracking.selfCalMinADC,
+                "ADC", "", "", "0", "2047");
+
     // Validate ADC extremes were reached
     if (testTracking.selfCalMinADC > MIN_ADC_THRESHOLD) {
       testTracking.failedTestName = "CAL ADC MIN";
@@ -1305,6 +1481,9 @@ bool testSelfCalibration() {
     }
 
     Serial.println("PASSED: Self-calibration completed successfully");
+    // The characterisation is only settled once self-calibration has finished,
+    // so this is the first point it is worth reading.
+    reportMotorCal();
     return true;  // Test complete (passed)
   }
 
@@ -1316,6 +1495,19 @@ bool testSelfCalibration() {
   }
 
   return false;  // Still running
+}
+
+// Record how long a commanded move took to settle and how far off it ended up.
+// `slot` indexes testTracking.settleMs/settleError; `commanded` is the position
+// that was written, so the residual is measured rather than merely bounded.
+void recordSettle(uint8_t slot, uint8_t commanded) {
+  uint32_t elapsed = millis() - testTracking.testStartTime;
+  testTracking.settleMs[slot] = (elapsed > 0xFFFF) ? 0xFFFF : (uint16_t)elapsed;
+  int16_t err = (int16_t)faderState.position - (int16_t)commanded;
+  if (err < 0) err = -err;
+  testTracking.settleError[slot] = (err > 255) ? 255 : (uint8_t)err;
+  Serial.printf("Reached idle state (%lu ms, off by %u)\n",
+                (unsigned long)elapsed, testTracking.settleError[slot]);
 }
 
 bool testDiagnostics() {
@@ -1349,7 +1541,7 @@ bool testDiagnostics() {
 
     case 1:  // Wait for idle after position 10
       if (faderState.valid && faderState.mode == MODE_INPUT_IDLE) {
-        Serial.println("Reached idle state");
+        recordSettle(0, 10);
         testTracking.diagnosticsMovementStep = 2;
         return false;
       }
@@ -1369,7 +1561,7 @@ bool testDiagnostics() {
 
     case 3:  // Wait for idle after position 200
       if (faderState.valid && faderState.mode == MODE_INPUT_IDLE) {
-        Serial.println("Reached idle state");
+        recordSettle(1, 200);
         testTracking.diagnosticsMovementStep = 4;
         return false;
       }
@@ -1389,7 +1581,7 @@ bool testDiagnostics() {
 
     case 5:  // Wait for idle after position 80
       if (faderState.valid && faderState.mode == MODE_INPUT_IDLE) {
-        Serial.println("Reached idle state");
+        recordSettle(2, 80);
         testTracking.diagnosticsMovementStep = 6;
         return false;
       }
@@ -1401,6 +1593,22 @@ bool testDiagnostics() {
       return false;
 
     case 6:  // Complete
+      for (uint8_t i = 0; i < 3; i++) {
+        char key[20];
+        snprintf(key, sizeof(key), "settle_ms_%u", i + 1);
+        reportDataI("MOVEMENT", key, testTracking.settleMs[i], "ms", "", "3000", "0", "3300");
+      }
+      {
+        uint8_t worst = 0;
+        for (uint8_t i = 0; i < 3; i++) {
+          if (testTracking.settleError[i] > worst) worst = testTracking.settleError[i];
+        }
+        reportDataI("MOVEMENT", "worst_settle_error", worst, "/255", "", "");
+      }
+      // Covers self-calibration and these movements - the whole heavy-driving
+      // window. No limit yet: this is a baseline to gather before setting one.
+      reportDataF("MOVEMENT", "peak_motor_current", testTracking.peakMotorCurrentMa, 1,
+                  "mA", "", "");
       Serial.println("PASSED: Diagnostics complete");
       return true;
 
@@ -1502,7 +1710,12 @@ bool testTouchSensor() {
     case TestTracking::TOUCH_PHASE_WAIT_FOR_TOUCH_DETECT:
       // Wait for touch to be detected (timeout 3 seconds)
       if (faderState.touch) {
-        Serial.println("Touch detected!");
+        // The phase timer was started immediately after the servo was driven to
+        // the touch position, so this is the actuation-to-detect latency.
+        testTracking.touchDetectMs = (uint16_t)(millis() - testTracking.touchTestPhaseStartTime);
+        testTracking.touchDeltaAtTouch = faderState.touchDelta;
+        Serial.printf("Touch detected! (%u ms, delta %d)\n",
+                      testTracking.touchDetectMs, testTracking.touchDeltaAtTouch);
         testTracking.touchTestPhase = TestTracking::TOUCH_PHASE_CONFIRM_TOUCH;
         testTracking.touchTestPhaseStartTime = millis();
         return false;
@@ -1550,7 +1763,8 @@ bool testTouchSensor() {
     case TestTracking::TOUCH_PHASE_WAIT_FOR_TOUCH_CLEAR:
       // Wait for touch to clear (timeout 3 seconds)
       if (!faderState.touch) {
-        Serial.println("Touch cleared");
+        testTracking.touchReleaseMs = (uint16_t)(millis() - testTracking.touchTestPhaseStartTime);
+        Serial.printf("Touch cleared (%u ms)\n", testTracking.touchReleaseMs);
         testTracking.touchTestPhase = TestTracking::TOUCH_PHASE_FINAL_WAIT;
         testTracking.touchTestPhaseStartTime = millis();
         return false;
@@ -1574,6 +1788,11 @@ bool testTouchSensor() {
       // // Disable servo
       // servo.detach();
       // Serial.println("Servo disabled");
+      reportDataI("TOUCH_SENSOR", "touch_reference", faderState.touchReference, "units", "", "");
+      reportDataI("TOUCH_SENSOR", "touch_delta", testTracking.touchDeltaAtTouch, "units", "", "");
+      reportDataI("TOUCH_SENSOR", "touch_detect_ms", testTracking.touchDetectMs, "ms", "", "3000", "0", "3300");
+      reportDataI("TOUCH_SENSOR", "touch_release_ms", testTracking.touchReleaseMs, "ms", "", "3000", "0", "3300");
+      reportDataI("TOUCH_SENSOR", "touch_recal_count", faderState.touchRecalCount, "", "", "");
       Serial.println("PASSED: Touch sensor test complete");
       return true;  // Test complete (passed)
 
@@ -1632,13 +1851,29 @@ void handleTestStateMachine(bool presencePressed, float v0, float i0, float v1, 
     return;
   }
 
+  // Peak motor-rail draw, sampled only while the motor is actually driven.
+  // Idle draw is already covered by the MOTOR_POWER check.
+  if (currentTestState == TEST_SELF_CALIBRATION || currentTestState == TEST_DIAGNOSTICS ||
+      currentTestState == TEST_TOUCH_SENSOR) {
+    if (i1 > testTracking.peakMotorCurrentMa) {
+      testTracking.peakMotorCurrentMa = i1;
+    }
+  }
+
   switch (currentTestState) {
     case TEST_IDLE:
-      // Continue refreshing motor state while idle (if available)
-      readFaderBuddyState();
-      if (!versionInfo.valid) {
-        readFaderBuddyVersionInfo();
-      }
+      // Deliberately no I2C traffic here.
+      //
+      // Presence asserting leaves this state immediately, so anything polled in
+      // idle is by definition aimed at a board that is NOT fully seated - i.e.
+      // exactly while the connector is still mating. Hammering a DUT through
+      // that window is what wedged the bus: a transaction interrupted by
+      // contact bounce or a brownout leaves the DUT's TWI holding SDA low
+      // mid-byte, waiting for clocks that never come, and every subsequent
+      // transfer then burns the full Wire timeout until the board is pulled.
+      //
+      // A blank chip never drives SDA, which is why unprogrammed boards were
+      // unaffected and boards with firmware on them hung.
 
       if (presenceJustPressed) {
         // Debounce delay before starting tests
@@ -1665,6 +1900,15 @@ void handleTestStateMachine(bool presencePressed, float v0, float i0, float v1, 
         testTracking.selfCalMaxADC = 0;
         testTracking.touchTestPhase = TestTracking::TOUCH_PHASE_CHECK_NO_TOUCH;
         testTracking.touchTestPhaseStartTime = 0;
+        testTracking.phaseStartTime = 0;
+        testTracking.peakMotorCurrentMa = 0;
+        testTracking.touchDetectMs = 0;
+        testTracking.touchReleaseMs = 0;
+        testTracking.touchDeltaAtTouch = 0;
+        for (uint8_t i = 0; i < 3; i++) {
+          testTracking.settleMs[i] = 0;
+          testTracking.settleError[i] = 0;
+        }
         clearSerialBuffer();  // Clear serial buffer
         versionInfo.valid = false;
         faderState.valid = false;
@@ -1778,8 +2022,11 @@ void handleTestStateMachine(bool presencePressed, float v0, float i0, float v1, 
       break;
 
     case TEST_PASSED:
-      // Continue refreshing motor state while in passed state
-      readFaderBuddyState();
+      // Only while the board is still seated: presence releases before the
+      // contacts separate, so this stops before the removal bounce window.
+      if (presencePressed) {
+        readFaderBuddyState();
+      }
 
       if (presenceJustReleased) {
         Serial.println("Returning to idle\n");
@@ -1790,8 +2037,10 @@ void handleTestStateMachine(bool presencePressed, float v0, float i0, float v1, 
       break;
 
     case TEST_FAILED:
-      // Continue refreshing motor state while in failed state
-      readFaderBuddyState();
+      // As TEST_PASSED: seated boards only.
+      if (presencePressed) {
+        readFaderBuddyState();
+      }
 
       if (presenceJustReleased) {
         Serial.println("Test failed, returning to idle\n");
@@ -1807,6 +2056,14 @@ void handleTestStateMachine(bool presencePressed, float v0, float i0, float v1, 
   // else (e.g. moving between individual sub-tests) updates lastReportedTestState
   // without emitting anything.
   if (currentTestState != lastReportedTestState) {
+    // Close out the phase being left before anything else, so the DATA lines a
+    // test emits as it finishes fall inside its own PHASE_START/PHASE_END pair.
+    const char* leaving = getTestPhaseKey(lastReportedTestState);
+    if (leaving != nullptr) {
+      reportPhaseEnd(leaving, currentTestState != TEST_FAILED,
+                     millis() - testTracking.phaseStartTime);
+    }
+
     if (currentTestState == TEST_LOGIC_POWER) {
       Serial.println(">>TEST_START<<");
     } else if (currentTestState == TEST_PASSED) {
@@ -1815,6 +2072,12 @@ void handleTestStateMachine(bool presencePressed, float v0, float i0, float v1, 
       Serial.print(">>TEST_RESULT:FAIL:");
       Serial.print(testTracking.failedTestName);
       Serial.println("<<");
+    }
+
+    const char* entering = getTestPhaseKey(currentTestState);
+    if (entering != nullptr) {
+      testTracking.phaseStartTime = millis();
+      reportPhaseStart(entering);
     }
     lastReportedTestState = currentTestState;
   }

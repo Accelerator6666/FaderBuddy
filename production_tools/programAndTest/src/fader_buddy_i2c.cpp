@@ -77,6 +77,10 @@ bool FaderBuddyI2C::readProtocolVersion(uint8_t& version) {
   return readRegister(REG_VERSION, &version, 1);
 }
 
+bool FaderBuddyI2C::readMotorCal(uint8_t out[12]) {
+  return readRegister(REG_MOTOR_CAL, out, 12);
+}
+
 bool FaderBuddyI2C::writeTargetPosition(uint8_t target) {
   if (_wire == nullptr) {
     return false;

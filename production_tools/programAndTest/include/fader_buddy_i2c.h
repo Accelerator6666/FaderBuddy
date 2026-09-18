@@ -38,6 +38,10 @@ public:
   bool readTouchDelta(int16_t& delta);
   bool readTouchReference(uint16_t& reference);
   bool readTouchRecalCount(uint16_t& recalCount);
+  // REG_MOTOR_CAL: 12 read-only bytes of per-unit motor characterisation (see
+  // firmware/src/motor_cal.h MotorCalData, plus the derived velocity floor and
+  // deadband the control law ended up running).
+  bool readMotorCal(uint8_t out[12]);
   bool calibrateTouch();
   bool clearError();
   bool selfCalibrate();
