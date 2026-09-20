@@ -35,9 +35,10 @@ FaderBuddy is a bidirectional motor fader control system with integrated capacit
 - **production_tools/programAndTest/** - ESP32-based production test fixture
   - ESP32 PlatformIO project with display and current monitoring
   - Python test scripts for automated hardware validation
-  - `factory_test_images/` - The fixed old application the jig flashes before
-    exercising an I2C update. Applications only - the bootloader is built from
-    source on every run so production never ships a stale one
+  - `factory_test_images/` - The fixed old application the jig installs over
+    I2C (onto a bootloader-only board) before exercising an I2C update.
+    Applications only - the bootloader is built from source at every
+    `test_host.py` start so production never ships a stale one
   - `tools/label_printer.py` - Minimal TSPL-over-USB driver for the ORGSTA T001
     thermal label printer, and `tools/dut_label.py` - the per-DUT label layout.
     Reimplements only what the vendor's Chrome extension does: bulk-write a TSPL
@@ -135,7 +136,8 @@ run automatically by a pre-build hook).
 
 The bootloader itself is **not** field-updatable, so the only way onto a board is
 UPDI. Production boards get theirs from the jig, which builds
-`env:fb_bootloader_only` from source on every run - never check a bootloader
+`env:fb_bootloader_only` from source each time `test_host.py` starts (restart it
+after changing the bootloader) - never check a bootloader
 image into `production_tools/programAndTest/factory_test_images/`, or boards will
 ship with a stale bootloader.
 

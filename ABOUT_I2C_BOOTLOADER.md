@@ -383,12 +383,19 @@ regression test. Every board that goes through the jig exercises the full update
 path:
 
 - `TEST_FW_BOOTSTRAP` UPDI-flashes the DUT with the **current bootloader, built
-  from source on that run**, plus a fixed `FW_VERSION=0` application. That
+  from source when `test_host.py` starts**, and its fuses - nothing else. It
+  checks the bootloader comes up resident reporting `BL_STATUS_NO_APP`, then
+  installs a fixed `FW_VERSION=0` application through it over I2C. That
   establishes "a board with a bootloader, running an old app".
 - `TEST_FW_I2C_UPDATE` then drives `REG_ENTER_BOOTLOADER` from that running old
   application and updates it to the current application over I2C.
 
-Building the bootloader fresh on every jig run is deliberate. A checked-in
+The old application goes over I2C rather than UPDI purely for speed: serial
+UPDI costs a USB round trip (~2.4 ms on the CH340 adapter) per small
+transaction, several per flash page, so UPDI-flashing the ~230-page application
+took ~20 s against ~3 s over I2C.
+
+Building the bootloader fresh for every jig session is deliberate. A checked-in
 bootloader image would silently ship a stale bootloader on every board flashed
 after a bootloader change, and the bootloader is the one part that cannot be
 fixed later over I2C. See

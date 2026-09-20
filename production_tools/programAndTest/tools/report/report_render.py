@@ -81,8 +81,9 @@ DEVICE_NOTE = ("This checks that every major feature functions, with real motor 
 
 PHASE_NOTES = {
     "POWER_LED": "Ensures power LED is present and lit, using a photodiode.",
-    "FW_BOOTSTRAP": "Ensures firmware can be uploaded successfully over UPDI and "
-                    "installs the bootloader to support firmware updates.",
+    "FW_BOOTSTRAP": "Installs the bootloader over UPDI to support firmware updates, "
+                    "then loads a known older firmware so the next step can test a "
+                    "real update.",
     "FW_I2C_UPDATE": "Ensures the bootloader functions and allows for firmware "
                      "updates over I2C, for in-place firmware updates without a "
                      "dedicated UPDI programmer.",
@@ -376,8 +377,8 @@ def _render_phase(phase):
     rows = "\n".join(_render_row(p) for p in data)
     note = PHASE_NOTES.get(phase.key)
     blurb = (f'\n    <div class="phase-note">{html.escape(note)}</div>' if note else "")
-    # A phase can legitimately report no datapoints (the UPDI bootstrap either
-    # worked or it didn't); don't leave an empty rows container behind.
+    # A phase can legitimately report no datapoints (the firmware bootstrap
+    # either worked or it didn't); don't leave an empty rows container behind.
     body = f'\n    <div class="rows">\n{rows}\n    </div>' if phase.data else ""
     if not phase.data and blurb:
         blurb = blurb.replace('class="phase-note"',

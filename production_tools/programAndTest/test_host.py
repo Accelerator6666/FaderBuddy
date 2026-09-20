@@ -59,6 +59,10 @@ RESP_ACK = ">>ACK<<"
 RESP_SUCCESS = ">>SUCCESS<<"
 RESP_FAILURE = ">>FAILURE<<"
 
+# UPDI baud for the DUT flash. The datasheet's ceiling on the default 4 MHz UPDI
+# clock (see MAX_BAUD in flash_with_fuses.py).
+UPDI_BAUD = 230400
+
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
 
 # Where the QR code on a DUT label points (see docs/HOSTING_TEST_REPORTS.md).
@@ -101,6 +105,7 @@ class TestHost:
         self.baud = baud
         self.dummy = dummy
         self.serial = None
+        self.venv_python = None  # PlatformIO's python, set by build_bootloader()
         self.serial_number = None  # Store the last read serial number
         self.fw_version = None  # Firmware version the DUT reported after the I2C update
         self.protocol_version = None
@@ -388,26 +393,62 @@ class TestHost:
             self.serial.flush()
             logging.info(f"Sent: {response}")
 
+    def build_bootloader(self) -> bool:
+        """
+        Build the bootloader from source, once per test-host run.
+
+        Every board must get the *current* bootloader, never a checked-in image,
+        so this runs at startup rather than being replaced by a stored hex. It
+        used to run per DUT, which cost ~0.9 s of every cycle for a no-op
+        incremental build. Restart the test host after changing the bootloader.
+
+        Returns:
+            True if the build succeeded (or dummy mode skips it), False otherwise
+        """
+        if self.dummy:
+            return True
+
+        # PlatformIO Core uses a fixed virtual environment location
+        # See: https://docs.platformio.org/en/latest/core/installation/methods/installer-script.html
+        pio_venv = os.path.join(os.path.expanduser("~"), ".platformio", "penv")
+        self.venv_python = os.path.join(pio_venv, "bin", "python")
+
+        # flash_with_fuses.py needs pymcuprog, which is installed into this venv
+        # by the firmware's PlatformIO envs
+        if not os.path.exists(self.venv_python):
+            logging.error(f"PlatformIO virtual environment not found at {pio_venv}")
+            logging.error("Please ensure PlatformIO is installed correctly")
+            return False
+
+        logging.info(f"Building {BOOTLOADER_ENV} (once, at startup)...")
+        build = subprocess.run(
+            [self.venv_python, "-m", "platformio", "run", "-e", BOOTLOADER_ENV],
+            cwd=self.repo_root, capture_output=True, text=True, timeout=300,
+        )
+        if build.returncode != 0:
+            logging.error(f"Bootloader build failed:\n{build.stdout}\n{build.stderr}")
+            return False
+        logging.info(f"Bootloader built: {BOOTLOADER_HEX}")
+        return True
+
     def upload_firmware(self) -> bool:
         """
-        UPDI-flash the DUT's starting state: the current bootloader plus a fixed
-        FW_VERSION=0 application, via firmware/tools/flash_with_fuses.py.
+        UPDI-flash the DUT's starting state: the current bootloader and its
+        BOOTEND/APPEND fuses, and nothing else, via
+        firmware/tools/flash_with_fuses.py.
 
-        That makes the DUT "a board that already has the bootloader installed and
-        is running an old application" -- the precondition the jig firmware needs
-        in order to enter the I2C bootloader from a *running app* and update it to
-        the current application in-band. The current application is deliberately
-        not flashed here; it arrives over I2C, driven by the jig itself.
-
-        The bootloader half is built fresh from source on every run, so a
-        production board can never be shipped with a stale bootloader. Only the
-        application half is a fixed checked-in image, because the test needs a
-        genuinely old application to update away from.
+        No application goes over UPDI. With the app section blank the bootloader
+        stays resident, and the jig installs the fixed old application over I2C
+        and then updates it to the current one - so both images arrive through
+        the bootloader, and the second install still exercises entry from a
+        running application exactly as an in-field update does. UPDI is bound by
+        USB round-trip latency per page, so keeping it to the ~24 bootloader
+        pages is most of what makes this step fast.
 
         Returns:
             True if upload succeeded, False otherwise
         """
-        logging.info("Starting firmware upload (current bootloader + fixed old app via UPDI)...")
+        logging.info("Starting firmware upload (current bootloader + fuses via UPDI)...")
 
         # Clear serial number and firmware version from previous upload
         self.serial_number = None
@@ -421,46 +462,17 @@ class TestHost:
             return True
 
         try:
-            # PlatformIO Core uses a fixed virtual environment location
-            # See: https://docs.platformio.org/en/latest/core/installation/methods/installer-script.html
-            home_dir = os.path.expanduser("~")
-            pio_venv = os.path.join(home_dir, ".platformio", "penv")
-            venv_python = os.path.join(pio_venv, "bin", "python")
-
-            # Check if PlatformIO venv exists (flash_with_fuses.py needs pymcuprog,
-            # which is installed into this venv by the firmware's PlatformIO envs)
-            if not os.path.exists(venv_python):
-                logging.error(f"PlatformIO virtual environment not found at {pio_venv}")
-                logging.error("Please ensure PlatformIO is installed correctly")
-                return False
-
-            logging.info(f"Using PlatformIO venv: {pio_venv}")
-
             flash_script = self.repo_root / "firmware" / "tools" / "flash_with_fuses.py"
-            old_app_hex = (self.script_dir / "factory_test_images" / "old_app_fw0.hex")
-            if not old_app_hex.exists():
-                logging.error(f"Fixed old-application image not found: {old_app_hex}")
-                return False
-
-            # Build the bootloader from source so every board gets the current one.
-            logging.info(f"Building {BOOTLOADER_ENV}...")
-            build = subprocess.run(
-                [venv_python, "-m", "platformio", "run", "-e", BOOTLOADER_ENV],
-                cwd=self.repo_root, capture_output=True, text=True, timeout=300,
-            )
-            if build.returncode != 0:
-                logging.error(f"Bootloader build failed:\n{build.stdout}\n{build.stderr}")
-                return False
 
             port = self.updi_port or "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
             if self.updi_port:
                 logging.info(f"Using UPDI port override: {self.updi_port}")
 
             cmd = [
-                venv_python, str(flash_script),
+                self.venv_python, str(flash_script),
                 "--port", port,
+                "--baud", str(UPDI_BAUD),
                 "--hex", str(BOOTLOADER_HEX),
-                "--hex", str(old_app_hex),
                 "--erase",
                 "--bootend", hex(BL_BOOTEND),
                 "--append", hex(BL_APPEND),
@@ -687,6 +699,9 @@ def main():
     test_host = TestHost(args.port, args.updi_port, args.baud, args.dummy, batch_id,
                          print_labels=not args.no_labels,
                          upload_reports=not args.no_upload)
+
+    if not test_host.build_bootloader():
+        sys.exit(1)
 
     try:
         test_host.connect()

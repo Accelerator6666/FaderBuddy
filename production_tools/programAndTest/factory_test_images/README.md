@@ -10,18 +10,21 @@ This file holds the application **only**. The bootloader is not part of it.
 
 ## How the jig uses it
 
-`TEST_FW_BOOTSTRAP` UPDI-flashes the DUT with two images in one go (see
-`upload_firmware()` in `../test_host.py`):
-
-1. the **current** bootloader, built from source on every run
-   (`env:fb_bootloader_only`), and
-2. this fixed old application.
+`TEST_FW_BOOTSTRAP` UPDI-flashes the DUT with the **current** bootloader and
+its fuses only (see `upload_firmware()` in `../test_host.py`). The bootloader
+is built from source (`env:fb_bootloader_only`) when `test_host.py` starts.
+The jig then installs this fixed old application through that bootloader over
+I2C - it is embedded in the jig firmware as `FADER_OLD_APP_IMAGE` by
+`../tools/generate_app_image.py`, so re-build the jig after regenerating it.
 
 `TEST_FW_I2C_UPDATE` then drives `REG_ENTER_BOOTLOADER` from that running old
 app and updates it to the current application over I2C, exactly the way a real
 in-field update works.
 
-Building the bootloader fresh on every run is deliberate: a checked-in image of
+The old app goes over I2C rather than UPDI only because it is much faster:
+serial UPDI is bound by USB round-trip latency per flash page.
+
+Building the bootloader fresh for every test session is deliberate: a checked-in image of
 the bootloader would silently ship a **stale bootloader** on every production
 board flashed after a bootloader change. Only the application half is frozen,
 because the test needs an old application to update away from.
