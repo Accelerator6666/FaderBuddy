@@ -130,59 +130,24 @@ layer-addressed registers.
 
 ## ESPHome component
 
-### 0.4.0 - unreleased
+### 0.4.0
 
-- **Fader firmware is now packaged by default.** A `fader_buddy:` block that
-  says nothing about firmware embeds the newest release in `KNOWN_FIRMWARE`, so
-  a fader running something older reports itself as out of date with no yaml at
-  all. `firmware: "1.3"` still pins a specific version, and the new
-  `firmware: none` opts out entirely - no image, no update entity, and no
-  build-time download. The default costs a download on the first build (cached
-  by hash afterwards) and ~14 KB of host flash per distinct version. "Newest
-  known" means newest known to this component version; nothing is checked at
-  runtime, so changing what a fader is offered means updating the component.
-- Firmware updates are now a **Home Assistant update entity** instead of a
-  button and a text sensor. A fader with `firmware:`/`firmware_image:`
-  configured reports its installed version and the packaged one, so HA raises
-  its normal "update available" notification, renders an install button, and
-  shows a real progress bar while the image is written - all in the place HA
-  already reports every other device's firmware. With `firmware:`, the entity
-  also links to that version's GitHub release. The standard `update.perform`
-  action and `update.is_available` condition work on it; `update.perform` with
-  `force_update: true` is how to drive a downgrade, which HA will not offer by itself.
-- **Breaking:** the auto-created **Firmware Update** button is gone, replaced by
-  the update entity above. `firmware_update:` on the hub now configures that
-  entity (`name:`, `icon:`, `internal:`, … as before). An automation that
-  pressed the button by id needs `update.perform` or the unchanged
-  `fader_buddy.update_firmware` action instead.
-- **Breaking:** the **Firmware Version** text sensor is replaced by a
-  general-purpose **Status** sensor, configured with `status:`. The version
-  itself is what the update entity reports, so the sensor is free to say
-  something more useful: `Firmware 1.4`, `Firmware 1.3 - update to 1.4
-  available`, `Bootloader - no application installed`, `Not responding`,
-  `Updating: writing 45%`, or a failure with its reason. A config still setting
-  `firmware_version:` fails validation with a pointer to this. In C++,
-  `set_firmware_text_sensor()` became `set_status_text_sensor()`.
-- A fader whose firmware predates I2C bootloader entry (below 1.3) is now
-  reported as **out of date rather than up to date**, even though the install
-  cannot succeed - being behind is a true and useful fact, and hiding it was the
-  more confusing of the two. Its version carries a `+updi-required` suffix
-  (semver build metadata, so it never changes HA's up-to-date/behind decision),
-  and the status sensor says `cannot update to X.Y over I2C, needs a one-time
-  UPDI reflash`. Attempting the install logs the reason, repeats it on the
-  status sensor, and fires `on_firmware_update_result` with `UPDI reflash
-  required`; an update entity has no error field on the wire, so those are the
-  only places it can be said.
-- Versions reported to Home Assistant stay parseable so HA can order them:
-  `1.4`, `1.1+updi-required`, `0.0+bootloader` (sitting in its bootloader with
-  no app), `0.0+unreachable` (never answered a probe).
-- Home Assistant's "check for updates" re-reads the fader's version, and
-  re-probes one that never answered - so a fader reflashed over UPDI, or
-  plugged in after boot, stops being misreported without restarting the host.
-  Also available as `refresh_firmware_state()` from a lambda.
-- `request_firmware_update()` became `start_firmware_update(bool force = false)`.
+- Firmware updates now use Home Assistant's standard update entity instead of
+  the **Firmware Update** button, with an install button and progress bar.
+  `firmware_update:` now configures this entity.
+- The newest known fader firmware is packaged by default, so HA offers an update
+  for any fader on older firmware with no extra yaml. `firmware: none` opts out.
+  The first build needs network access to download the image.
+- **Breaking:** the **Firmware Version** text sensor is replaced by a **Status**
+  sensor, which also shows update progress and errors. Replace
+  `firmware_version:` with `status:` in your config.
+- Faders too old to update over I2C (firmware before 1.3) now show as out of
+  date, and the Status sensor says they need a UPDI reflash.
+- A fader that doesn't answer at boot is re-probed until it does, instead of
+  being given up on after ~30 seconds (or immediately, with no firmware image).
+- Lambda API: `request_firmware_update()` is renamed `start_firmware_update()`.
 
-### 0.3.0 - unreleased
+### 0.3.0
 
 - The hub now creates its own diagnostic text sensors - serial number and
   firmware version - so a bare `fader_buddy:` block reports what it is with no
@@ -244,7 +209,7 @@ layer-addressed registers.
   a human pressing a button is already the stop. A failed update is reported
   and forgotten; press the button again to retry.
 
-### 0.2.0 - unreleased
+### 0.2.0
 
 - `fader_buddy.remote_move_to` takes `speed:` (0-255), and `layer_haptics`
   takes `default_speed:` for moves that don't name one.

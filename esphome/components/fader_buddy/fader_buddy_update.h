@@ -17,8 +17,8 @@
 
 #include "esphome/core/defines.h"
 
-// USE_UPDATE is defined by codegen only when an update entity actually exists,
-// so a fader with no firmware image configured pays nothing for this.
+// USE_UPDATE is only defined when an update entity exists, so none of this is
+// compiled in unless some fader has a firmware image configured.
 #ifdef USE_UPDATE
 
 #include <string>
@@ -31,28 +31,24 @@ namespace fader_buddy {
 
 class FaderBuddy;
 
-// Home Assistant's native firmware-update entity for one fader: installed
-// version, available version, an install button and a progress bar, in the
-// place HA already looks for firmware updates.
+// Home Assistant firmware update entity for one fader.
 //
-// Worth knowing when changing any of this: Home Assistant decides whether an
-// update is *offered* from the two version strings alone (see
-// UpdateStateResponse in api_connection.cpp -- there is no "available" flag on
-// the wire, and no field for an error message either). UPDATE_STATE_AVAILABLE
-// is only consulted locally, by the update.is_available condition. So the
-// version strings are the contract, and anything we want a user to read has to
-// go in them or in the hub's status text sensor.
+// Home Assistant decides whether an update is available by comparing the
+// current and latest version strings. The API has no "available" flag and no
+// error message field (see UpdateStateResponse in api_connection.cpp);
+// UPDATE_STATE_AVAILABLE is only used on the device, by the update.is_available
+// condition. Anything the user needs to see has to go in the version strings
+// or the hub's status text sensor.
 //
-// The entity is owned by the hub rather than being a Component of its own: the
-// hub drives every state change from its own setup/poll/update state machine.
+// This isn't a Component; the hub drives all of its state changes.
 class FaderBuddyUpdate : public update::UpdateEntity, public Parented<FaderBuddy> {
  public:
-  // HA's "install" button, and the update.perform action. force skips the
-  // cheap cached go/no-go check (which is also what allows a downgrade).
+  // HA's install button and the update.perform action. force skips the check
+  // for whether there's anything to install, which allows a downgrade.
   void perform(bool force) override;
-  // HA's "check for updates". Cheap: re-reads REG_FW_VERSION, or re-probes a
-  // fader that never answered, so a fader flashed over UPDI behind our back
-  // doesn't stay misreported until the next reboot.
+  // HA's "check for updates". Re-reads REG_FW_VERSION (or re-probes a fader
+  // that never answered), so a fader reflashed over UPDI is picked up without
+  // a reboot.
   void check() override;
 
   void set_title(const std::string &title) { this->update_info_.title = title; }
@@ -60,13 +56,13 @@ class FaderBuddyUpdate : public update::UpdateEntity, public Parented<FaderBuddy
   void set_release_url(const std::string &url) { this->update_info_.release_url = url; }
   void set_latest_version(const std::string &version) { this->update_info_.latest_version = version; }
 
-  // Steady state: what the fader is running, and whether installing the
-  // packaged image would change anything.
+  // Not installing: the fader's current version, and whether the packaged
+  // image differs from it.
   void publish_versions(const std::string &current_version, bool available);
-  // Mid-install, before there is a meaningful percentage (entering the
-  // bootloader, erasing, verifying).
+  // Installing, with no percentage (entering the bootloader, erasing,
+  // verifying).
   void publish_installing();
-  // Mid-install, streaming pages: coarse percentage, 0-100.
+  // Installing, writing pages: percentage, 0-100.
   void publish_progress(uint8_t pct);
 };
 

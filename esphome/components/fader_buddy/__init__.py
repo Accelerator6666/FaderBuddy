@@ -30,10 +30,9 @@ from esphome.core import CORE
 
 MULTI_CONF = True
 DEPENDENCIES = ["i2c"]
-# `update` costs nothing when unused: its to_code only adds a `using` line, and
-# USE_UPDATE (and with it all of the update entity's code) is only defined once
-# an update entity is actually registered - which only happens for a fader with
-# a firmware image configured.
+# Loading `update` costs nothing when unused: USE_UPDATE, which gates all of the
+# update entity code, is only defined once an update entity is registered, and
+# that only happens for a fader with a firmware image.
 AUTO_LOAD = ["button", "text_sensor", "update"]
 
 DOMAIN = "fader_buddy"
@@ -103,12 +102,12 @@ def _release_asset_name(version: str) -> str:
 
 
 def _latest_known_version() -> str:
-    """The newest entry in KNOWN_FIRMWARE, which is what a fader gets by default."""
+    """The newest version in KNOWN_FIRMWARE, used when the config doesn't pick one."""
     return max(KNOWN_FIRMWARE, key=_parse_version)
 
 
 def _release_page_url(version: str) -> str:
-    """The release's own page, for the "release notes" link on the update entity."""
+    """GitHub release page, used as the update entity's release notes link."""
     return f"https://github.com/{GITHUB_REPO}/releases/tag/{RELEASE_TAG_PREFIX}v{version}"
 
 
@@ -324,22 +323,18 @@ def _firmware_or_none(value):
 
 
 def _apply_default_firmware(config):
-    """Fill in the newest known firmware when the config names none.
+    """Default to the newest known firmware when the config doesn't name one.
 
-    A fader with no image has no update entity, so leaving this to the user
-    means the common case - a fader running whatever it shipped with, and a host
-    that could update it - reports nothing and offers nothing. Defaulting to the
-    newest release in KNOWN_FIRMWARE makes "is this fader current?" answerable
-    out of the box.
+    Without an image there is no update entity, so by default a fader would
+    never report whether it's out of date.
 
-    This runs after the schema (and after has_at_most_one_key) rather than being
-    a plain schema default, for two reasons: a default would make CONF_FIRMWARE
-    always present and so always collide with `firmware_image:`, and the version
-    has to go through FIRMWARE_SCHEMA to be downloaded and hash-checked like any
-    other.
+    This is a validator rather than a schema default because a default would
+    always conflict with `firmware_image:` in has_at_most_one_key, and the
+    version still has to go through FIRMWARE_SCHEMA to be downloaded and
+    hash-checked.
 
-    Opting out is `firmware: none`, which costs the update entity but also the
-    ~14 KB image and the build-time download.
+    `firmware: none` opts out, dropping the update entity along with the ~14 KB
+    image and the build-time download.
     """
     if CONF_FIRMWARE in config or CONF_FIRMWARE_IMAGE in config:
         return config
@@ -363,17 +358,15 @@ AUTO_TEXT_SENSORS = {
     CONF_STATUS: ("Status", "mdi:information-outline"),
 }
 
-# Buttons the hub creates itself, same deal. A press here ties the fader up for
-# seconds - sweeping the carriage - so this is entity_category "config" rather
-# than a control.
+# Buttons the hub creates itself, same deal. Self calibration ties the fader up
+# for seconds while it sweeps the carriage, so it's entity_category "config"
+# rather than a control.
 AUTO_BUTTONS = {
     CONF_SELF_CALIBRATION: ("Self Calibration", "mdi:tune-vertical"),
 }
 
-# The firmware update entity, created only for a fader with an image configured
-# (see to_code). Home Assistant renders this as a real firmware update: installed
-# vs available version, an install button, a progress bar, and its own update
-# notification - so there is no button to press and nothing to poll from a lambda.
+# The firmware update entity. Only created for a fader with a firmware image
+# (see to_code).
 AUTO_UPDATES = {
     CONF_FIRMWARE_UPDATE: ("Firmware", "mdi:chip"),
 }
@@ -407,8 +400,7 @@ def _default_entity_names(config):
 def _has_firmware(config):
     """True if this fader has a packaged image to install.
 
-    `firmware: none` is validated to a None, which is how a config opts out of
-    the default image entirely - see _apply_default_firmware.
+    `firmware: none` validates to None; see _apply_default_firmware.
     """
     return config.get(CONF_FIRMWARE) is not None or CONF_FIRMWARE_IMAGE in config
 
@@ -453,30 +445,26 @@ CONFIG_SCHEMA = cv.All(
             entity_category="diagnostic",
             icon=AUTO_TEXT_SENSORS[CONF_SERIAL_NUMBER][1],
         ),
-        # General-purpose diagnostic line for this fader: firmware version,
-        # "not responding", a required UPDI reflash, live update progress.
+        # Diagnostic text: firmware version, "not responding", a required UPDI
+        # reflash, or update progress.
         cv.Optional(CONF_STATUS, default={}): core_text_sensor.text_sensor_schema(
             entity_category="diagnostic",
             icon=AUTO_TEXT_SENSORS[CONF_STATUS][1],
         ),
-        # Replaced in 0.4.0: the version now lives on the firmware update
-        # entity (where Home Assistant compares it against the packaged one),
-        # and everything else the sensor used to say lives on `status:`.
+        # Removed in 0.4.0: the version is reported by the firmware update
+        # entity, and the sensor's other messages moved to `status:`.
         cv.Optional(CONF_FIRMWARE_VERSION): cv.invalid(
-            "`firmware_version:` was removed in fader_buddy 0.4.0. The fader's version is "
-            "reported by the `firmware_update:` entity now, which Home Assistant renders as "
-            "a real firmware update. For a plain text sensor (dashboards, LVGL), use "
-            "`status:` instead - it reports the version plus whatever else is worth knowing "
-            "about the fader."
+            "`firmware_version:` was removed in fader_buddy 0.4.0. The firmware version is "
+            "now reported by the `firmware_update:` entity. If you need it as a text sensor "
+            "(e.g. for a dashboard or LVGL), use `status:`, which includes the version."
         ),
         cv.Optional(CONF_SELF_CALIBRATION, default={}): button.button_schema(
             SelfCalibrationButton,
             entity_category="config",
             icon=AUTO_BUTTONS[CONF_SELF_CALIBRATION][1],
         ),
-        # Only created when a firmware image is configured (see to_code); with
-        # nothing to install there is no update to report. Whether one is
-        # actually pending is runtime state, decided on the device.
+        # Only created when a firmware image is configured (see to_code).
+        # Whether an update is available is decided on the device at runtime.
         cv.Optional(CONF_FIRMWARE_UPDATE, default={}): update.update_schema(
             FaderBuddyUpdate,
             device_class="firmware",
@@ -523,10 +511,9 @@ async def to_code(config):
         btn = await button.new_button(config[key])
         await cg.register_parented(btn, config[CONF_ID])
 
-    # No firmware configured means nothing that could ever be installed, so
-    # don't put a dead update entity in Home Assistant. The version it reports
-    # comes from the image itself, on the device (see FaderBuddy::setup); only
-    # the release link is knowable here.
+    # With no firmware image there's nothing to install, so skip the update
+    # entity. Its latest version is read from the image at runtime (see
+    # FaderBuddy::setup); only the release URL is set here.
     if _has_firmware(config):
         upd = await update.new_update(config[CONF_FIRMWARE_UPDATE])
         await cg.register_parented(upd, config[CONF_ID])
