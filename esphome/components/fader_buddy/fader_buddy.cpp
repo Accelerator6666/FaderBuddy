@@ -60,6 +60,18 @@ static const uint32_t RETRY_PROBE_FIRST_MS = 1000;
 void FaderBuddy::setup() {
   ESP_LOGCONFIG(TAG, "Setting up FaderBuddy...");
 
+#ifdef USE_UPDATE
+  // The packaged image's own FW_VERSION footer is the only source of truth for
+  // what an install would put on this fader, so the entity is told here rather
+  // than from codegen - there is no second copy of the version to drift.
+  if (this->update_entity_ != nullptr && this->firmware_image_ != nullptr) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d.%d", this->firmware_fw_version_ >> 8, this->firmware_fw_version_ & 0xFF);
+    this->update_entity_->set_latest_version(buf);
+    this->update_entity_->set_title("FaderBuddy fader firmware");
+  }
+#endif
+
   // Done before the probe, not after, so it still happens for a fader that
   // doesn't answer yet: the loop rate is a property of this config, not of the
   // fader.
@@ -101,7 +113,7 @@ void FaderBuddy::probe_and_init_(bool first_attempt) {
       retry_probe_backoff_ms_ = RETRY_PROBE_FIRST_MS;
       retry_probe_at_ = millis() + RETRY_PROBE_FIRST_MS;
       retry_probes_left_ = RETRY_PROBE_COUNT;
-      publish_firmware_text_("not responding");
+      publish_firmware_state_();
       return;
     }
     ESP_LOGE(TAG, "Init: no response from the fader at 0x%02X after %d attempts",
@@ -140,6 +152,11 @@ void FaderBuddy::probe_and_init_(bool first_attempt) {
                   "This firmware also predates I2C bootloader entry, so it needs a one-time "
                   "UPDI reflash - no update over I2C is possible.",
              I2C_PROTOCOL_VERSION, buffer);
+    // Say so in Home Assistant too, not just the boot log: with an image
+    // configured there is an update entity, and leaving it blank forever is
+    // the least helpful thing this fader could do. firmware_version_string_()
+    // tags it +updi-required, and the status line spells that out.
+    publish_firmware_state_();
     this->mark_failed();
     return;
   }
@@ -214,18 +231,17 @@ void FaderBuddy::dump_config() {
   if (this->awaiting_device_) {
     ESP_LOGW(TAG, "  Not responding - %u re-probes remaining", this->retry_probes_left_);
   }
-  if (this->firmware_version_ == FW_VERSION_NONE) {
-    ESP_LOGCONFIG(TAG, "  Firmware Version: 1.0 or older (does not report a version)");
-  } else {
-    ESP_LOGCONFIG(TAG, "  Firmware Version: %d.%d", this->firmware_version_ >> 8,
-                  this->firmware_version_ & 0xFF);
+  ESP_LOGCONFIG(TAG, "  Status: %s", this->status_text_().c_str());
+  if (this->firmware_image_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Packaged Firmware: %d.%d (%u bytes)", this->firmware_fw_version_ >> 8,
+                  this->firmware_fw_version_ & 0xFF, (unsigned) this->firmware_image_length_);
   }
 
   if (!this->serial_number_.empty()) {
     ESP_LOGCONFIG(TAG, "  Serial Number: %s", this->serial_number_.c_str());
   }
   LOG_TEXT_SENSOR("  ", "Serial Number", this->serial_text_sensor_);
-  LOG_TEXT_SENSOR("  ", "Firmware Version", this->firmware_text_sensor_);
+  LOG_TEXT_SENSOR("  ", "Status", this->status_text_sensor_);
 
   LOG_UPDATE_INTERVAL(this);
 }
@@ -271,8 +287,8 @@ void FaderBuddy::read_firmware_version_() {
   if (this->bootloader_resident_) {
     this->firmware_version_ = FW_VERSION_NONE;
     this->speed_supported_ = false;
-    ESP_LOGCONFIG(TAG, "Fader firmware: %s", firmware_version_text_().c_str());
-    publish_firmware_text_(firmware_version_text_());
+    ESP_LOGCONFIG(TAG, "Fader status: %s", status_text_().c_str());
+    publish_firmware_state_();
     return;
   }
 
@@ -289,36 +305,88 @@ void FaderBuddy::read_firmware_version_() {
     this->firmware_version_ = FW_VERSION_NONE;
   }
 
-  std::string version = firmware_version_text_();
-  if (this->firmware_version_ == FW_VERSION_NONE) {
-    ESP_LOGCONFIG(TAG, "Fader firmware: %s (no version register)", version.c_str());
-  } else {
-    ESP_LOGCONFIG(TAG, "Fader firmware: %s", version.c_str());
-  }
-  publish_firmware_text_(version);
-
   this->speed_supported_ = this->firmware_version_ != FW_VERSION_NONE &&
                            this->firmware_version_ >= FW_VERSION_MOVE_SPEED;
+
+  ESP_LOGCONFIG(TAG, "Fader status: %s", status_text_().c_str());
+  publish_firmware_state_();
 }
 
-std::string FaderBuddy::firmware_version_text_() const {
+// Home Assistant orders these against the packaged version to decide whether to
+// offer an update, so they have to stay parseable as versions. The suffix is
+// semver build metadata, which is ignored when ordering - it rides along to be
+// read, and never changes the decision. See firmware_version_string_()'s
+// declaration for the full list.
+std::string FaderBuddy::firmware_version_string_() const {
+  if (this->awaiting_device_) {
+    return "0.0+unreachable";
+  }
   if (this->bootloader_resident_) {
-    return "bootloader (no app)";
+    return "0.0+bootloader";
   }
+  // A fader that can't be reached over I2C says so here as well as in the
+  // status line, because the update entity is where a user will look first.
+  const char *suffix = this->bootloader_entry_supported_() ? "" : "+updi-required";
+  char buf[32];
   if (this->firmware_version_ == FW_VERSION_NONE) {
-    // Pre-1.1 firmware has no version register, so this is the most specific
-    // thing that can be said about it.
-    return "1.0 or older";
+    // No version register at all, so 1.0 is a floor rather than a reading -
+    // "1.0 or older" in prose, but this field has to stay comparable.
+    snprintf(buf, sizeof(buf), "1.0%s", suffix);
+  } else {
+    snprintf(buf, sizeof(buf), "%d.%d%s", this->firmware_version_ >> 8, this->firmware_version_ & 0xFF, suffix);
   }
-  char buf[16];
-  snprintf(buf, sizeof(buf), "%d.%d", this->firmware_version_ >> 8, this->firmware_version_ & 0xFF);
   return buf;
 }
 
-void FaderBuddy::publish_firmware_text_(const std::string &text) {
-  if (this->firmware_text_sensor_ != nullptr) {
-    this->firmware_text_sensor_->publish_state(text);
+// The prose version of the same thing, for the status text sensor. This is the
+// only place a fader that cannot be updated over I2C gets to explain itself in
+// words, so it says what is wrong rather than just what version is installed.
+std::string FaderBuddy::status_text_() const {
+  if (this->awaiting_device_) {
+    return "Not responding";
   }
+  if (this->bootloader_resident_) {
+    return "Bootloader - no application installed";
+  }
+
+  char buf[32];
+  if (this->firmware_version_ == FW_VERSION_NONE) {
+    snprintf(buf, sizeof(buf), "1.0 or older");
+  } else {
+    snprintf(buf, sizeof(buf), "%d.%d", this->firmware_version_ >> 8, this->firmware_version_ & 0xFF);
+  }
+  std::string text = std::string("Firmware ") + buf;
+
+  if (this->firmware_image_ == nullptr) {
+    return text;  // nothing packaged, so there is no update to say anything about
+  }
+  char packaged[16];
+  snprintf(packaged, sizeof(packaged), "%d.%d", this->firmware_fw_version_ >> 8, this->firmware_fw_version_ & 0xFF);
+
+  if (!this->bootloader_entry_supported_()) {
+    return text + " - cannot update to " + packaged + " over I2C, needs a one-time UPDI reflash";
+  }
+  if (this->firmware_update_offered_()) {
+    return text + " - update to " + packaged + " available";
+  }
+  return text;
+}
+
+void FaderBuddy::publish_status_(const std::string &text) {
+  if (this->status_text_sensor_ != nullptr) {
+    this->status_text_sensor_->publish_state(text);
+  }
+}
+
+// Every path that changes what the fader is running ends here, so the status
+// line and Home Assistant's update entity never disagree.
+void FaderBuddy::publish_firmware_state_() {
+  publish_status_(status_text_());
+#ifdef USE_UPDATE
+  if (this->update_entity_ != nullptr) {
+    this->update_entity_->publish_versions(firmware_version_string_(), firmware_update_offered_());
+  }
+#endif
 }
 
 // Log what self-calibration measured about this fader's motor, and the
@@ -726,48 +794,115 @@ void FaderBuddy::set_firmware_image(const uint8_t *image, uint32_t length, uint1
 
 uint8_t FaderBuddy::get_last_mode_() const { return (last_state_ & STATE_MODE_bm) >> STATE_MODE_bp; }
 
-// Cheap, bus-free answer to "would an update do anything?", from what setup
-// cached. Deliberately conservative in the same way update_firmware() is, so a
-// button press that this rejects would have been rejected over the wire too.
-bool FaderBuddy::firmware_update_available() const {
+// Is there any I2C route to this fader's bootloader? Firmware predating
+// FW_VERSION_BOOTLOADER_ENTRY ignores REG_ENTER_BOOTLOADER and has no
+// bootloader behind it anyway - installing one is a fuse write, so UPDI is the
+// only way in. FW_VERSION_NONE (0xFFFF) reads back from firmware with no
+// version register at all and numerically exceeds the threshold, so it has to
+// be excluded explicitly.
+bool FaderBuddy::bootloader_entry_supported_() const {
+  if (awaiting_device_ || bootloader_resident_) {
+    // Nothing was read, so this isn't the question to answer - a fader that is
+    // silent or sitting in its bootloader is handled by the callers below, and
+    // in both cases an update over I2C is worth attempting.
+    return false;
+  }
+  return firmware_version_ != FW_VERSION_NONE && firmware_version_ >= FW_VERSION_BOOTLOADER_ENTRY;
+}
+
+// Would installing the packaged image change anything? This is what Home
+// Assistant is told, and it deliberately ignores whether the install could
+// actually succeed: a fader too old to reach its bootloader still shows as out
+// of date, because reporting it as up to date hides a real fact about it. What
+// it needs instead (a UPDI reflash) is in its version suffix and its status
+// line, and start_firmware_update() repeats it when the install is attempted.
+bool FaderBuddy::firmware_update_offered_() const {
   if (firmware_image_ == nullptr) {
     return false;  // nothing packaged for this fader
   }
-  if (awaiting_device_) {
-    // The fader never answered, so there is no version to compare - but a fader
-    // that is wedged or stranded mid-flash is exactly what an update recovers,
-    // and refusing here would leave UPDI as the only way back. update_tick_()'s
-    // own probe reports honestly if it really is absent.
+  if (awaiting_device_ || bootloader_resident_) {
+    // No version to compare - but a fader that is wedged, absent or stranded
+    // mid-flash is exactly what an update recovers, and hiding that would leave
+    // UPDI as the only way back. update_tick_()'s own probe reports honestly if
+    // it really is absent.
     return true;
-  }
-  if (bootloader_resident_) {
-    return true;  // no app to compare against, and recovery is exactly the point
-  }
-  if (firmware_version_ == FW_VERSION_NONE || firmware_version_ < FW_VERSION_BOOTLOADER_ENTRY) {
-    return false;  // no I2C route to the bootloader; UPDI migration required
   }
   return firmware_version_ != firmware_fw_version_;
 }
 
-// Entry point for the firmware update button. update_firmware() would reach the
-// same conclusion, but only after taking the bus and, in the already-up-to-date
-// case, waiting out a touch-idle poll first. A button in Home Assistant gets
-// pressed speculatively, so decide the common no-op case from cached state.
-void FaderBuddy::request_firmware_update() {
-  if (!firmware_update_available()) {
-    if (firmware_image_ == nullptr) {
-      ESP_LOGW(TAG, "Firmware update: no firmware configured for this fader, ignoring press");
-    } else if (firmware_version_ == FW_VERSION_NONE || firmware_version_ < FW_VERSION_BOOTLOADER_ENTRY) {
-      ESP_LOGW(TAG, "Firmware update: this fader's firmware predates I2C bootloader entry "
-                    "(needs >= v%u.%u); a one-time UPDI migration is required. Ignoring press",
-               FW_VERSION_BOOTLOADER_ENTRY >> 8, FW_VERSION_BOOTLOADER_ENTRY & 0xFF);
-    } else {
-      ESP_LOGI(TAG, "Firmware update: already at v%u.%u, nothing to install. Ignoring press",
-               firmware_version_ >> 8, firmware_version_ & 0xFF);
-    }
+// Could an update actually run against this fader?
+bool FaderBuddy::firmware_update_possible_() const {
+  if (firmware_image_ == nullptr) {
+    return false;
+  }
+  return awaiting_device_ || bootloader_resident_ || bootloader_entry_supported_();
+}
+
+// Cheap, bus-free answer to "would an update do anything?", from what setup
+// cached. Deliberately conservative in the same way update_firmware() is, so a
+// request that this rejects would have been rejected over the wire too.
+bool FaderBuddy::firmware_update_available() const {
+  return firmware_update_possible_() && firmware_update_offered_();
+}
+
+// Entry point for Home Assistant's install button and the update.perform
+// action. update_firmware() would reach the same conclusion, but only after
+// taking the bus and, in the already-up-to-date case, waiting out a touch-idle
+// poll first. An install button gets pressed speculatively, so decide the
+// common no-op case from cached state.
+//
+// force is update.perform's force flag: it skips this pre-check entirely, which
+// is how a deliberate downgrade (or a retry against a fader this thinks is
+// fine) is driven from an automation.
+void FaderBuddy::start_firmware_update(bool force) {
+  if (firmware_image_ == nullptr) {
+    ESP_LOGW(TAG, "Firmware update: no firmware configured for this fader, ignoring request");
+    on_firmware_update_result_->trigger(false, "no firmware_image configured");
     return;
   }
+
+  if (!force) {
+    if (!firmware_update_possible_()) {
+      // The one case Home Assistant offers but we cannot serve. There is no
+      // error field on an update entity, so the explanation goes where a user
+      // can actually read it: the log, the status sensor, and the result
+      // trigger. Republish afterwards so the entity settles back rather than
+      // looking like an install that is still running.
+      ESP_LOGE(TAG,
+               "Firmware update: this fader's firmware predates I2C bootloader entry "
+               "(needs >= v%u.%u); a one-time UPDI reflash is required - see "
+               "ABOUT_I2C_BOOTLOADER.md. Ignoring request",
+               FW_VERSION_BOOTLOADER_ENTRY >> 8, FW_VERSION_BOOTLOADER_ENTRY & 0xFF);
+      publish_firmware_state_();
+      on_firmware_update_result_->trigger(false, "UPDI reflash required");
+      return;
+    }
+    if (!firmware_update_offered_()) {
+      ESP_LOGI(TAG, "Firmware update: already at v%u.%u, nothing to install. Ignoring request",
+               firmware_version_ >> 8, firmware_version_ & 0xFF);
+      publish_firmware_state_();
+      return;
+    }
+  }
+
   update_firmware();
+}
+
+// Home Assistant's "check for updates", and a cheap way to notice a fader that
+// was reflashed over UPDI, or that turned up after the boot-time backoff gave
+// up on it.
+void FaderBuddy::refresh_firmware_state() {
+  if (update_stage_ != UPDATE_IDLE) {
+    return;  // an update is mid-flight; it publishes its own state
+  }
+  if (awaiting_device_) {
+    probe_and_init_(false);
+    if (awaiting_device_) {
+      publish_firmware_state_();  // still silent; say so rather than going quiet
+    }
+    return;  // a successful probe_and_init_ publishes via read_firmware_version_()
+  }
+  read_firmware_version_();
 }
 
 // Starting an update is just a state transition -- the transfer itself runs a
@@ -786,6 +921,10 @@ void FaderBuddy::update_firmware() {
   }
   if (s_update_in_progress) {
     ESP_LOGW(TAG, "update_firmware: another fader's update is already in progress, skipping");
+    // Republish so Home Assistant's card settles back to "update available"
+    // rather than looking like an install that started and went quiet. The
+    // other fader owns the bus; install again once it is done.
+    publish_firmware_state_();
     on_firmware_update_result_->trigger(false, "another update already in progress");
     return;
   }
@@ -799,7 +938,7 @@ void FaderBuddy::update_firmware() {
   // go idle. Polling that from loop() instead of a delay() loop means a fader
   // that is being touched no longer freezes the whole device for 5 seconds.
   enter_update_stage_(UPDATE_WAIT_TOUCH_IDLE, 5000);
-  publish_firmware_text_("waiting for fader");
+  publish_update_stage_("waiting for fader");
 }
 
 // Move to `stage`, arming its deadline. timeout_ms of 0 means the stage does its
@@ -809,15 +948,27 @@ void FaderBuddy::enter_update_stage_(UpdateStage stage, uint32_t timeout_ms) {
   update_deadline_ = millis() + timeout_ms;
 }
 
-// Publish coarse progress to the firmware version text sensor. Steps of 5% keep
-// the churn down; a fader mid-update has no version to report anyway, so the
-// field is free to say what it is doing instead.
+// A stage of the update that has no meaningful percentage yet. The status
+// sensor gets the prose, and the update entity goes "installing" so Home
+// Assistant shows the install as running from the first moment rather than once
+// the first page is written.
+void FaderBuddy::publish_update_stage_(const char *label) {
+  ESP_LOGD(TAG, "update_firmware: %s", label);
+  publish_status_(std::string("Updating: ") + label);
+#ifdef USE_UPDATE
+  if (this->update_entity_ != nullptr) {
+    this->update_entity_->publish_installing();
+  }
+#endif
+}
+
+// Publish coarse progress: a percentage to the update entity's progress bar,
+// prose to the status sensor. Steps of 5% keep the churn down.
 //
 // Whether Home Assistant sees each step depends on `api: batch_delay:`. States
 // are batched per entity and deduplicated, so with the default 100ms delay HA
 // sees only the steps that happen to straddle a flush. The log always shows all
-// of them, and the terminal states (the new version, or "<version> (update
-// failed)") always get through.
+// of them, and the terminal states always get through.
 void FaderBuddy::publish_update_progress_(const char *label, uint8_t pct) {
   if (pct == update_progress_pct_) {
     return;
@@ -826,10 +977,15 @@ void FaderBuddy::publish_update_progress_(const char *label, uint8_t pct) {
     return;
   }
   update_progress_pct_ = pct;
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%s %u%%", label, pct);
-  ESP_LOGD(TAG, "update_firmware: %s", buf);
-  publish_firmware_text_(buf);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "Updating: %s %u%%", label, pct);
+  ESP_LOGD(TAG, "update_firmware: %s %u%%", label, pct);
+  publish_status_(buf);
+#ifdef USE_UPDATE
+  if (this->update_entity_ != nullptr) {
+    this->update_entity_->publish_progress(pct);
+  }
+#endif
 }
 
 void FaderBuddy::log_update_starting_() {
@@ -868,13 +1024,18 @@ void FaderBuddy::finish_update_(bool ok, const std::string &error) {
     // answering, and go back to re-probing from update().
     bootloader_resident_ = false;
     awaiting_device_ = true;
-    publish_firmware_text_("not responding (update failed)");
+    publish_firmware_state_();
+    publish_status_(status_text_() + " - update failed: " + error);
     on_firmware_update_result_->trigger(false, error);
     return;
   }
   bootloader_resident_ = (probe == BL_VERSION_MARKER);
+  // Publishes the fader's real state, which also clears the progress bar and
+  // puts the update entity back to "available" so it can be retried.
   read_firmware_version_();
-  publish_firmware_text_(firmware_version_text_() + " (update failed)");
+  // ...then say why it stopped. Only the status sensor can carry this; an
+  // update entity has no error field.
+  publish_status_(status_text_() + " - update failed: " + error);
   on_firmware_update_result_->trigger(false, error);
 }
 
@@ -963,7 +1124,7 @@ void FaderBuddy::update_tick_() {
         finish_update_(false, "enter bootloader cmd failed");
         return;
       }
-      publish_firmware_text_("entering bootloader");
+      publish_update_stage_("entering bootloader");
       enter_update_stage_(UPDATE_WAIT_MARKER, 2000);
       return;
     }
@@ -987,7 +1148,7 @@ void FaderBuddy::update_tick_() {
         finish_update_(false, "no bootloader status");
         return;
       }
-      publish_firmware_text_("erasing");
+      publish_update_stage_("erasing");
       if (!bl_request_erase_app_()) {
         finish_update_(false, "erase cmd failed");
         return;
@@ -1048,7 +1209,7 @@ void FaderBuddy::update_tick_() {
         finish_update_(false, "nvm err=" + std::to_string(le) + " after write");
         return;
       }
-      publish_firmware_text_("verifying");
+      publish_update_stage_("verifying");
       if (!bl_request_image_crc16_(BL_APP_START, (uint16_t) firmware_image_length_)) {
         finish_update_(false, "crc request failed");
         return;
@@ -1073,7 +1234,7 @@ void FaderBuddy::update_tick_() {
           finish_update_(false, "run app cmd failed");
           return;
         }
-        publish_firmware_text_("starting app");
+        publish_update_stage_("starting app");
         enter_update_stage_(UPDATE_WAIT_APP, 2000);
         return;
       }

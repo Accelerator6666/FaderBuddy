@@ -25,6 +25,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/optional.h"
 
+#include "fader_buddy_update.h"
 #include "i2c_data.h"
 
 #include <string>
@@ -34,7 +35,7 @@ namespace fader_buddy {
 
 // Version of this ESPHome component, independent of the fader's firmware
 // version. Logged at startup so a bug report identifies both halves.
-#define FADER_BUDDY_COMPONENT_VERSION "0.3.1"
+#define FADER_BUDDY_COMPONENT_VERSION "0.4.0"
 
 
 // Protocol v5: Layer management is now handled in firmware
@@ -88,7 +89,14 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
     // uppercase hex string (e.g. "AABBCCDDEEFF00112233"), or "" if not yet read.
     std::string get_serial_number() const { return serial_number_; }
     void set_serial_text_sensor(text_sensor::TextSensor *s) { serial_text_sensor_ = s; }
-    void set_firmware_text_sensor(text_sensor::TextSensor *s) { firmware_text_sensor_ = s; }
+    // General-purpose diagnostic sensor: what this fader is doing and anything
+    // the user needs to know about it (firmware version, "not responding", a
+    // UPDI reflash being required, live update progress). Replaces the old
+    // firmware-version-only sensor, whose job the update entity now does.
+    void set_status_text_sensor(text_sensor::TextSensor *s) { status_text_sensor_ = s; }
+#ifdef USE_UPDATE
+    void set_update_entity(FaderBuddyUpdate *u) { update_entity_ = u; }
+#endif
 
     // Called only from codegen to store initial haptic configs
     void store_initial_layer_haptic_config(uint8_t layer, uint8_t mode, uint8_t detent_count, uint8_t detent_strength);
@@ -101,7 +109,7 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
     void set_firmware_image(const uint8_t *image, uint32_t length, uint16_t image_crc16, uint16_t fw_version);
     // Manual update action: starts an update and returns immediately. The transfer
     // then runs a slice at a time from loop(), so the device stays responsive and
-    // coarse progress reaches the firmware version text sensor as it goes. The
+    // coarse progress reaches the update entity and the status sensor as it goes. The
     // outcome arrives on the on_firmware_update_result trigger, not from here.
     // Safe to call whether or not the fader is already at the packaged version
     // (no-ops if so). Never triggered automatically -- only when this is called.
@@ -114,10 +122,16 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
     // polled from a lambda; update_firmware() re-checks over the wire before
     // committing, so this is a cheap pre-filter, not the authority.
     bool firmware_update_available() const;
-    // What the firmware update button presses. Same thing as update_firmware(),
-    // except a press with nothing to install is rejected outright rather than
-    // taking the bus to find that out.
-    void request_firmware_update();
+    // What Home Assistant's install button (and update.perform) calls. Same
+    // thing as update_firmware(), except a request with nothing to install is
+    // rejected outright rather than taking the bus to find that out. force
+    // skips that pre-check, which is what allows a deliberate downgrade.
+    void start_firmware_update(bool force = false);
+    // Re-read the fader's firmware version - or re-probe one that never
+    // answered - and republish. Drives Home Assistant's "check for updates",
+    // and is how a fader reflashed over UPDI stops being misreported without a
+    // reboot of the host.
+    void refresh_firmware_state();
 
     Trigger<uint8_t, uint8_t> *get_on_manual_move_trigger() const { return on_manual_move_; }
     Trigger<uint8_t, uint8_t> *get_on_raw_position_update_trigger() const { return on_raw_position_update_; }
@@ -146,12 +160,43 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
         void retry_probe_();
         void read_serial_number_();
         void read_firmware_version_();
-        // How the firmware version text sensor renders the fader's current
-        // state: "1.5", "1.0 or older", or "bootloader (no app)".
-        std::string firmware_version_text_() const;
-        // Push an arbitrary string to that sensor. Used to report update
-        // status there, since a fader mid-update has no version to report.
-        void publish_firmware_text_(const std::string &text);
+        // The fader's current version as the update entity reports it, and as
+        // Home Assistant compares it: semver-ish, so HA can order it against
+        // the packaged version, with a build-metadata suffix carrying the
+        // things a bare version can't say. Semver ignores build metadata when
+        // ordering, so the suffix never changes whether HA offers an update.
+        //   "1.4"                 - running 1.4
+        //   "1.1+updi-required"   - running 1.1, too old to reach its
+        //                           bootloader over I2C (see
+        //                           FW_VERSION_BOOTLOADER_ENTRY)
+        //   "1.0+updi-required"   - no version register at all, so 1.0 is a
+        //                           floor rather than a reading
+        //   "0.0+bootloader"      - sitting in its bootloader, no app at all
+        //   "0.0+unreachable"     - never answered a probe
+        std::string firmware_version_string_() const;
+        // The human-readable line for the status text sensor: the same facts
+        // as above in prose, plus whatever the fader is doing right now.
+        std::string status_text_() const;
+        // Push an arbitrary string to the status sensor. Used for transient
+        // states (update progress, a failure reason) that status_text_()
+        // deliberately doesn't model.
+        void publish_status_(const std::string &text);
+        // Publish the steady state - status line and update entity together.
+        // Every path that changes what the fader is running ends here.
+        void publish_firmware_state_();
+        // Is there any I2C route to this fader's bootloader? False means a
+        // one-time UPDI reflash is the only way to update it (firmware
+        // predating FW_VERSION_BOOTLOADER_ENTRY has neither the register nor a
+        // bootloader behind it).
+        bool bootloader_entry_supported_() const;
+        // Would installing the packaged image change anything? Ignores whether
+        // it is *possible*, deliberately: Home Assistant is told about an
+        // update it can't install, because silently reporting such a fader as
+        // up to date is the more confusing of the two lies. start_firmware_update()
+        // then explains why it can't, in the log and the status sensor.
+        bool firmware_update_offered_() const;
+        // Could an update actually run? offered && this is firmware_update_available().
+        bool firmware_update_possible_() const;
         void read_motor_calibration_();
 
         // State variables
@@ -162,7 +207,10 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
         Mode last_mode_{MODE_INPUT_IDLE};
         std::string serial_number_;
         text_sensor::TextSensor *serial_text_sensor_{nullptr};
-        text_sensor::TextSensor *firmware_text_sensor_{nullptr};
+        text_sensor::TextSensor *status_text_sensor_{nullptr};
+#ifdef USE_UPDATE
+        FaderBuddyUpdate *update_entity_{nullptr};
+#endif
         HighFrequencyLoopRequester high_freq_;
         bool invert_{false};
         bool last_touch_{false};
@@ -251,6 +299,8 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
         void update_tick_();
         void enter_update_stage_(UpdateStage stage, uint32_t timeout_ms = 0);
         void publish_update_progress_(const char *label, uint8_t pct);
+        // An update stage with no meaningful percentage yet.
+        void publish_update_stage_(const char *label);
         void log_update_starting_();
         void finish_update_(bool ok, const std::string &error);
 
@@ -286,15 +336,6 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
 class SelfCalibrationButton : public button::Button, public Parented<FaderBuddy> {
  protected:
   void press_action() override { this->parent_->run_self_calibration(); }
-};
-
-// A press runs the fader_buddy.update_firmware action, but only when there is
-// actually something to install -- see firmware_update_available().
-// Writing flash takes tens of seconds and the fader is unusable meanwhile, so
-// this is entity_category "config" as well.
-class FirmwareUpdateButton : public button::Button, public Parented<FaderBuddy> {
- protected:
-  void press_action() override { this->parent_->request_firmware_update(); }
 };
 
 template<typename... Ts> class SetActiveLayerAction : public Action<Ts...> {

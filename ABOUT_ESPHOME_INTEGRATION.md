@@ -133,8 +133,12 @@ For additional complete working examples, see the `esphome/examples/` directory:
   - **detent_strength** (optional, default: `0`): Detent force feedback strength (0-7, for detents mode only)
   - **default_speed** (optional, default: `255`, requires fader firmware 1.1+): Move speed for this layer, 0-255, used by `fader_buddy.remote_move_to` and by lambda calls to `remote_move_to()` that don't pass a speed of their own. `255` is full speed; see the `speed` parameter of `fader_buddy.remote_move_to` below. This one is tracked in ESPHome rather than on the fader — the component looks up the active layer's value and sends it with each move — so changing it costs no extra I2C traffic.
   - **value_change_min_interval** (optional, default: `0ms`): Rate limiting for `on_manual_move` trigger on this layer. Useful to reduce traffic when controlling networked devices like zigbee lights. Set to `0ms` for no rate limiting. Keep as low as possible.
-- **firmware** (optional): Released fader firmware to package for I2C updates. See [Firmware updates](#firmware-updates) below. Mutually exclusive with `firmware_image`.
-- **firmware_image** (optional): Path to a locally built application image, for iterating on an unreleased build. Mutually exclusive with `firmware`.
+- **firmware** (optional, default: the newest release in `KNOWN_FIRMWARE`): Released fader firmware to package for I2C updates. Set a version (`firmware: "1.3"`) to pin one, or `firmware: none` to package nothing at all — which also removes the update entity and the build-time download. See [Firmware updates](#firmware-updates) below. Mutually exclusive with `firmware_image`.
+- **firmware_image** (optional): Path to a locally built application image, for iterating on an unreleased build. Takes the place of the default. Mutually exclusive with `firmware`.
+- **serial_number** (optional): Options for the auto-created serial number text sensor (`name`, `id`, `icon`, `internal`, …). Diagnostic category.
+- **status** (optional): Options for the auto-created status text sensor — the fader's firmware version and anything else worth knowing about it, in prose. Diagnostic category. See [How a fader reports its version](#how-a-fader-reports-its-version).
+- **self_calibration** (optional): Options for the auto-created self-calibration button. Config category.
+- **firmware_update** (optional): Options for the auto-created firmware update entity. Only created when `firmware` or `firmware_image` is set. Config category.
 
 ### Triggers
 
@@ -282,8 +286,35 @@ button:
 ## Firmware updates
 
 The fader's own ATtiny1616 firmware can be updated over I2C through its bootloader,
-without a UPDI programmer. The image is embedded in the ESP32 build and streamed to
-the fader when you call `fader_buddy.update_firmware`.
+without a UPDI programmer. The image is embedded in the ESP32 build, and Home
+Assistant offers it as an ordinary firmware update for the fader — same
+notification, same install button, same progress bar as any other device.
+
+**This happens by default.** A `fader_buddy:` block that says nothing about
+firmware packages the newest release this component knows about, so a fader
+running something older reports itself as out of date without any yaml. Pin a
+specific version with `firmware:`, or opt out entirely with `firmware: none`:
+
+```yaml
+fader_buddy:
+  - id: fader_a          # newest known release, currently 1.4
+    address: 0x20
+  - id: fader_b
+    address: 0x21
+    firmware: "1.3"      # pinned; never changes, never nags once the fader is on 1.3
+  - id: fader_c
+    address: 0x22
+    firmware: none       # no image, no update entity, no build-time download
+```
+
+The default costs a build-time download (cached by hash afterwards, so only the
+first build needs network) and about 14 KB of ESP32 flash per distinct version
+across all faders. `firmware: none` is the way to avoid both.
+
+Note that "newest known" means newest known *to this component version*, not
+newest on GitHub — the list lives in `KNOWN_FIRMWARE` in the component, with a
+pinned sha256 for each entry. Nothing is ever checked at runtime, so updating
+what a fader is offered means updating the component and reflashing the host.
 
 ### Referencing a released image
 
@@ -340,59 +371,107 @@ reproducible from any tagged commit.
 
 ### Triggering an update
 
-A fader with `firmware:` or `firmware_image:` configured gets a **Firmware
-Update** button automatically, so there is nothing to write for the common case —
-it shows up in Home Assistant under the device's settings
-(`entity_category: config`). Without a configured image there is nothing to
-install, so no button is created. Rename or hide it on the hub:
+Every fader gets a **Firmware** update entity unless it is configured with
+`firmware: none`, so there is nothing to write for the common case.
+Home Assistant renders it as a real firmware update: installed version, available
+version, an install button, a progress bar, and its own update notification, in
+the same place HA reports every other device's updates. Rename or hide it on the
+hub:
 
 ```yaml
 fader_buddy:
   - id: my_fader
     firmware: "1.3"
     firmware_update:
-      name: "Update Fader Firmware"
+      name: "Fader Firmware"
       # internal: true          # to keep it out of Home Assistant entirely
 ```
 
-A press is ignored unless there is genuinely something to install — a fader
-already running the packaged version, or firmware too old to reach its
-bootloader, just logs a line and does nothing, rather than tying up the I2C bus
-for tens of seconds to reach the same answer. That check happens at press time
-because whether an update is pending is runtime state rather than something the
-yaml knows.
+With `firmware:` (rather than a local `firmware_image:`) the entity also carries
+a link to that version's GitHub release, so the release notes are one click away
+in HA.
 
-The equivalent action, for driving an update from an automation:
+Installing is ignored unless there is genuinely something to install: a fader
+already running the packaged version just logs a line and does nothing, rather
+than tying up the I2C bus for tens of seconds to reach the same answer. That
+check happens at install time because whether an update is pending is runtime
+state rather than something the yaml knows.
+
+The equivalent actions, for driving an update from an automation:
 
 ```yaml
-button:
-  - platform: template
-    name: "Update Fader Firmware"
-    on_press:
-      - fader_buddy.update_firmware:
-          id: my_fader
+# The standard update action, which is the same thing the install button does:
+- update.perform: my_fader_firmware_update_id
+
+# ...or with force_update, which skips the "is this worth doing" pre-check. This
+# is how to drive a deliberate downgrade, which HA will not offer on its own.
+- update.perform:
+    id: my_fader_firmware_update_id
+    force_update: true
+
+# The component's own action, equivalent to a forced perform:
+- fader_buddy.update_firmware:
+    id: my_fader
 ```
 
-Updates only ever happen when the button is pressed or the action runs — there is
-no automatic update mode. The component refuses to start if the fader is being
-touched, if the target version is already installed, or if the fader's firmware
-predates I2C bootloader entry (`FW_VERSION` below 1.3), which needs a one-time
-UPDI migration. A failed update is not retried on its own and not counted
-anywhere: press the button again.
+`update.is_available` works as a condition too, replacing the
+`firmware_update_available()` lambda polling of earlier versions.
+
+Updates only ever happen when one of these runs — there is no automatic update
+mode. The component refuses to start if the fader is being touched, if the
+target version is already installed, or if the fader's firmware predates I2C
+bootloader entry (`FW_VERSION` below 1.3), which needs a one-time UPDI
+migration. A failed update is not retried on its own and not counted anywhere:
+install again.
 
 The action **returns immediately** — the transfer then runs a slice at a time from
 the main loop, so the device stays responsive throughout. The outcome arrives on
 `on_firmware_update_result`, not when the action returns.
 
+### How a fader reports its version
+
+The update entity reports the installed version in a form Home Assistant can
+order against the packaged one, which means it has to stay parseable as a
+version. Anything that is *not* a version rides along as a semver build-metadata
+suffix — semver ignores build metadata when ordering, so a suffix never changes
+whether HA offers an update:
+
+| Reported | Means |
+| --- | --- |
+| `1.4` | running firmware 1.4 |
+| `1.1+updi-required` | running 1.1, too old to reach its bootloader over I2C |
+| `1.0+updi-required` | no version register at all, so 1.0 is a floor, not a reading |
+| `0.0+bootloader` | sitting in its bootloader with no application installed |
+| `0.0+unreachable` | never answered a probe |
+
+The **Status** text sensor says the same things in prose, and is the place to
+look on a display or a dashboard:
+
+```
+Firmware 1.4
+Firmware 1.3 - update to 1.4 available
+Firmware 1.1 - cannot update to 1.4 over I2C, needs a one-time UPDI reflash
+Bootloader - no application installed
+Not responding
+```
+
+A fader too old to reach its bootloader is deliberately reported as **out of
+date** rather than up to date, even though the install cannot succeed: the fact
+that it is behind is true and worth knowing, and hiding it would be the more
+confusing of the two. Pressing install logs the reason, puts it on the status
+sensor, and fires `on_firmware_update_result` with `UPDI reflash required`. An
+update entity has no error field on the wire, so those three are the only places
+that explanation can go — Home Assistant itself will just show nothing happening.
+
 ### Watching an update
 
-The **Firmware Version** text sensor doubles as the update's status field — a fader
-mid-update has no version to report, so it says what it is doing instead:
-`waiting for fader` → `entering bootloader` → `erasing` → `writing 25%` … →
-`verifying` → `starting app`, then the new version (e.g. `1.5`). A failed update
-ends on the fader's real state with the reason appended, e.g. `1.3 (update failed)`
-or `bootloader (no app) (update failed)` if it was stranded mid-write. A fader that
-is sitting in its bootloader at startup reads `bootloader (no app)` from the outset.
+The update entity's progress bar carries the percentage, and the **Status** text
+sensor spells out each stage: `Updating: waiting for fader` → `entering
+bootloader` → `erasing` → `writing 25%` … → `verifying` → `starting app`, then
+the new version. A failed update ends on the fader's real state with the reason
+appended, e.g. `Firmware 1.3 - update failed: CRC mismatch ...`, or
+`Bootloader - no application installed - update failed: ...` if it was stranded
+mid-write.
 
 How much of the progress Home Assistant actually renders depends on `api:
 batch_delay:`. Entity states are batched and deduplicated per entity, so at the
@@ -407,7 +486,11 @@ register.
 One case is updatable even though no version can be read: a fader sitting in its
 bootloader with no working app image (see the forced-entry strap in
 `ABOUT_I2C_BOOTLOADER.md`). The component notices that at startup, logs it, and
-keeps the button live so the fader can be recovered.
+offers the update so the fader can be recovered.
+
+Home Assistant's "check for updates" re-reads the fader's version, and re-probes
+one that never answered — which is how a fader reflashed over UPDI, or plugged in
+after boot, stops being misreported without restarting the host.
 
 ### Cutting a release
 
@@ -421,20 +504,30 @@ prints the `KNOWN_FIRMWARE` line to paste into the component.
 
 ## Text Sensors
 
-### serial_number
+Each fader creates two diagnostic text sensors itself, so a bare `fader_buddy:`
+block reports what it is without any entity yaml:
 
-You can expose the microcontroller's serial number as a text sensor, which is handy for identifying a specific board for diagnostics. The serial is read once at startup and published as an uppercase hex string.
+- **serial_number** — the microcontroller's 10-byte factory ID as an uppercase
+  hex string, handy for identifying a specific board. Read once at startup.
+- **status** — what this fader is and what it is doing: its firmware version,
+  whether an update is available, whether it needs a UPDI reflash, whether it is
+  not responding, and live progress during an update. See
+  [How a fader reports its version](#how-a-fader-reports-its-version).
 
+Both take the standard ESPHome text sensor options, on the hub:
 
 ```yaml
-text_sensor:
-  - platform: fader_buddy
-    fader_buddy_id: my_fader
+fader_buddy:
+  - id: my_fader
     serial_number:
       name: "Fader Serial Number"
+    status:
+      name: "Fader Status"
+      # internal: true        # to keep it out of Home Assistant entirely
 ```
 
-The `serial_number` block accepts the standard ESPHome text sensor options (e.g. `name`, `id`, `icon`). It defaults to the `diagnostic` entity category.
+The older `text_sensor: platform: fader_buddy` form still works for
+`serial_number` and will be removed in component 0.5.0.
 
 ## C++ API (for Lambdas)
 
@@ -457,6 +550,11 @@ id(my_fader).run_self_calibration();
 
 // Serial number (empty until read at startup)
 std::string serial = id(my_fader).get_serial_number();
+
+// Firmware update (see the update.perform action for the usual way to do this)
+bool pending = id(my_fader).firmware_update_available();
+id(my_fader).start_firmware_update();   // pass true to force
+id(my_fader).refresh_firmware_state();  // re-read the version / re-probe
 ```
 
 ## Troubleshooting
@@ -470,7 +568,7 @@ std::string serial = id(my_fader).get_serial_number();
   silent. The boot scan is the quickest way to rule it out - count the
   addresses, not the faders
 
-**A fader's serial number and firmware version both read Unknown:**
+**A fader's serial number and status both read Unknown:**
 
 Both sensors are published during initialization, which only runs once the
 fader answers a probe of `REG_VERSION`, so Unknown means that probe never got a
@@ -481,9 +579,10 @@ usable answer. The boot log says which of the two cases it was:
   stays alive and re-probes on a doubling backoff — at roughly 1, 3, 7, 15 and
   31 seconds after boot — so a fader that turns up late initializes itself.
   After that it is left alone rather than tying up the bus on every poll. The
-  firmware version sensor reads `not responding`, and the **Firmware Update**
-  button stays pressable in case the fader is wedged rather than absent;
-  pressing it is also how to retry once the backoff has run out. With no image configured there is
+  status sensor reads `Not responding`, and the **Firmware** update entity stays
+  installable in case the fader is wedged rather than absent; installing is also
+  how to retry once the backoff has run out (as is Home Assistant's "check for
+  updates", which re-probes). With no image configured there is
   nothing to recover with, so the component is marked failed until reboot.
 - `Init: Incompatible I2C protocol version ... got N` - it answered, with a
   protocol older than v5. That firmware also predates I2C bootloader entry
@@ -491,8 +590,9 @@ usable answer. The boot log says which of the two cases it was:
   reach it. The component is marked failed.
 
 A fader sitting in its bootloader with no application is *neither* of these -
-it answers the probe with its own marker, reports `bootloader (no app)` as its
-firmware version, and is recovered by pressing **Firmware Update**.
+it answers the probe with its own marker, reports `Bootloader - no application
+installed` on its status sensor (and `0.0+bootloader` as its version), and is
+recovered by installing the **Firmware** update.
 
 **Fader moves in wrong direction:**
 - Set `invert: true` in the component configuration
