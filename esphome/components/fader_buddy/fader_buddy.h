@@ -25,6 +25,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/optional.h"
 
+#include "fader_buddy_update.h"
 #include "i2c_data.h"
 
 #include <string>
@@ -34,7 +35,7 @@ namespace fader_buddy {
 
 // Version of this ESPHome component, independent of the fader's firmware
 // version. Logged at startup so a bug report identifies both halves.
-#define FADER_BUDDY_COMPONENT_VERSION "0.3.1"
+#define FADER_BUDDY_COMPONENT_VERSION "0.4.0"
 
 
 // Protocol v5: Layer management is now handled in firmware
@@ -88,7 +89,12 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
     // uppercase hex string (e.g. "AABBCCDDEEFF00112233"), or "" if not yet read.
     std::string get_serial_number() const { return serial_number_; }
     void set_serial_text_sensor(text_sensor::TextSensor *s) { serial_text_sensor_ = s; }
-    void set_firmware_text_sensor(text_sensor::TextSensor *s) { firmware_text_sensor_ = s; }
+    // Diagnostic text sensor: firmware version, "not responding", a required
+    // UPDI reflash, or update progress.
+    void set_status_text_sensor(text_sensor::TextSensor *s) { status_text_sensor_ = s; }
+#ifdef USE_UPDATE
+    void set_update_entity(FaderBuddyUpdate *u) { update_entity_ = u; }
+#endif
 
     // Called only from codegen to store initial haptic configs
     void store_initial_layer_haptic_config(uint8_t layer, uint8_t mode, uint8_t detent_count, uint8_t detent_strength);
@@ -101,7 +107,7 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
     void set_firmware_image(const uint8_t *image, uint32_t length, uint16_t image_crc16, uint16_t fw_version);
     // Manual update action: starts an update and returns immediately. The transfer
     // then runs a slice at a time from loop(), so the device stays responsive and
-    // coarse progress reaches the firmware version text sensor as it goes. The
+    // coarse progress reaches the update entity and the status sensor as it goes. The
     // outcome arrives on the on_firmware_update_result trigger, not from here.
     // Safe to call whether or not the fader is already at the packaged version
     // (no-ops if so). Never triggered automatically -- only when this is called.
@@ -114,10 +120,14 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
     // polled from a lambda; update_firmware() re-checks over the wire before
     // committing, so this is a cheap pre-filter, not the authority.
     bool firmware_update_available() const;
-    // What the firmware update button presses. Same thing as update_firmware(),
-    // except a press with nothing to install is rejected outright rather than
-    // taking the bus to find that out.
-    void request_firmware_update();
+    // Called by Home Assistant's install button and update.perform. Same as
+    // update_firmware(), but rejects a request with nothing to install without
+    // touching the bus. force skips that check, e.g. to downgrade.
+    void start_firmware_update(bool force = false);
+    // Re-read the fader's firmware version (or re-probe it if it never
+    // answered) and republish. Used by Home Assistant's "check for updates",
+    // so a fader reflashed over UPDI is picked up without rebooting the host.
+    void refresh_firmware_state();
 
     Trigger<uint8_t, uint8_t> *get_on_manual_move_trigger() const { return on_manual_move_; }
     Trigger<uint8_t, uint8_t> *get_on_raw_position_update_trigger() const { return on_raw_position_update_; }
@@ -138,20 +148,45 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
 
     private:
         // Probe REG_VERSION and, if the answer is usable, finish initializing.
-        // first_attempt distinguishes the call from setup() (retries hard, and
-        // decides whether to fail the component) from the periodic retry driven
-        // by update() while awaiting_device_ is set.
+        // first_attempt distinguishes the call from setup() (retries hard) from
+        // the periodic retry driven by update() while awaiting_device_ is set.
         void probe_and_init_(bool first_attempt);
-        // Drives the bounded re-probe backoff while awaiting_device_ is set.
+        // Mark the fader as not responding and restart the re-probe backoff.
+        void start_awaiting_device_();
+        // Re-probes on the backoff while awaiting_device_ is set.
         void retry_probe_();
         void read_serial_number_();
         void read_firmware_version_();
-        // How the firmware version text sensor renders the fader's current
-        // state: "1.5", "1.0 or older", or "bootloader (no app)".
-        std::string firmware_version_text_() const;
-        // Push an arbitrary string to that sensor. Used to report update
-        // status there, since a fader mid-update has no version to report.
-        void publish_firmware_text_(const std::string &text);
+        // The fader's version as reported to the update entity. Home Assistant
+        // compares it against the packaged version, so it must parse as a
+        // version. Extra detail goes in a semver build-metadata suffix, which
+        // doesn't affect the comparison:
+        //   "1.4"                 - running 1.4
+        //   "1.1+updi-required"   - running 1.1, too old to enter its
+        //                           bootloader over I2C (see
+        //                           FW_VERSION_BOOTLOADER_ENTRY)
+        //   "1.0+updi-required"   - no version register, so 1.0 or older
+        //   "0.0+bootloader"      - in its bootloader, no app installed
+        //   "0.0+unreachable"     - never answered a probe
+        std::string firmware_version_string_() const;
+        // Human-readable text for the status sensor.
+        std::string status_text_() const;
+        // Publish arbitrary text to the status sensor, for transient states
+        // that status_text_() doesn't cover (update progress, failure reasons).
+        void publish_status_(const std::string &text);
+        // Publish status_text_() and the update entity state together.
+        void publish_firmware_state_();
+        // Can this fader enter its bootloader over I2C? If not, it needs a
+        // one-time UPDI reflash (see FW_VERSION_BOOTLOADER_ENTRY).
+        bool bootloader_entry_supported_() const;
+        // Would installing the packaged image change anything? Deliberately
+        // ignores whether the install is possible, so a fader that needs a
+        // UPDI reflash still shows as out of date. start_firmware_update()
+        // explains why if an install is attempted.
+        bool firmware_update_offered_() const;
+        // Could an install run against this fader at all?
+        // firmware_update_available() is offered && possible.
+        bool firmware_update_possible_() const;
         void read_motor_calibration_();
 
         // State variables
@@ -162,7 +197,10 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
         Mode last_mode_{MODE_INPUT_IDLE};
         std::string serial_number_;
         text_sensor::TextSensor *serial_text_sensor_{nullptr};
-        text_sensor::TextSensor *firmware_text_sensor_{nullptr};
+        text_sensor::TextSensor *status_text_sensor_{nullptr};
+#ifdef USE_UPDATE
+        FaderBuddyUpdate *update_entity_{nullptr};
+#endif
         HighFrequencyLoopRequester high_freq_;
         bool invert_{false};
         bool last_touch_{false};
@@ -172,18 +210,13 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
         // than a protocol version, i.e. the fader has no working app image. The
         // one case where an update is viable despite no readable app version.
         bool bootloader_resident_{false};
-        // The fader never answered the setup version probe, but a firmware_image
-        // is configured, so the component stays alive rather than being failed:
-        // update() keeps re-probing, and the firmware update button stays
-        // available to recover a fader that is wedged rather than absent.
-        // mark_failed() would foreclose both - ESPHome calls neither loop() nor
-        // update() on a failed component.
+        // The fader isn't answering its version probe. update() keeps
+        // re-probing, and a firmware update can still be installed in case it
+        // is wedged rather than absent.
         bool awaiting_device_{false};
-        // Bounded, doubling backoff for those re-probes; once it runs out the
-        // fader is left alone rather than tying up the bus on every poll.
+        // Doubling backoff for those re-probes, capped at RETRY_PROBE_MAX_MS.
         uint32_t retry_probe_at_{0};
         uint32_t retry_probe_backoff_ms_{0};
-        uint8_t retry_probes_left_{0};
         bool speed_supported_{false};
         bool warned_speed_unsupported_{false};  // warn once, not once per move
 
@@ -251,6 +284,8 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
         void update_tick_();
         void enter_update_stage_(UpdateStage stage, uint32_t timeout_ms = 0);
         void publish_update_progress_(const char *label, uint8_t pct);
+        // An update stage with no meaningful percentage yet.
+        void publish_update_stage_(const char *label);
         void log_update_starting_();
         void finish_update_(bool ok, const std::string &error);
 
@@ -286,15 +321,6 @@ class FaderBuddy : public PollingComponent, public i2c::I2CDevice {
 class SelfCalibrationButton : public button::Button, public Parented<FaderBuddy> {
  protected:
   void press_action() override { this->parent_->run_self_calibration(); }
-};
-
-// A press runs the fader_buddy.update_firmware action, but only when there is
-// actually something to install -- see firmware_update_available().
-// Writing flash takes tens of seconds and the fader is unusable meanwhile, so
-// this is entity_category "config" as well.
-class FirmwareUpdateButton : public button::Button, public Parented<FaderBuddy> {
- protected:
-  void press_action() override { this->parent_->request_firmware_update(); }
 };
 
 template<typename... Ts> class SetActiveLayerAction : public Action<Ts...> {

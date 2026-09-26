@@ -130,7 +130,24 @@ layer-addressed registers.
 
 ## ESPHome component
 
-### 0.3.0 - unreleased
+### 0.4.0
+
+- Firmware updates now use Home Assistant's standard update entity instead of
+  the **Firmware Update** button, with an install button and progress bar.
+  `firmware_update:` now configures this entity.
+- The newest known fader firmware is packaged by default, so HA offers an update
+  for any fader on older firmware with no extra yaml. `firmware: none` opts out.
+  The first build needs network access to download the image.
+- **Breaking:** the **Firmware Version** text sensor is replaced by a **Status**
+  sensor, which also shows update progress and errors. Replace
+  `firmware_version:` with `status:` in your config.
+- Faders too old to update over I2C (firmware before 1.3) now show as out of
+  date, and the Status sensor says they need a UPDI reflash.
+- A fader that doesn't answer at boot is re-probed until it does, instead of
+  being given up on after ~30 seconds (or immediately, with no firmware image).
+- Lambda API: `request_firmware_update()` is renamed `start_firmware_update()`.
+
+### 0.3.0
 
 - The hub now creates its own diagnostic text sensors - serial number and
   firmware version - so a bare `fader_buddy:` block reports what it is with no
@@ -192,7 +209,7 @@ layer-addressed registers.
   a human pressing a button is already the stop. A failed update is reported
   and forgotten; press the button again to retry.
 
-### 0.2.0 - unreleased
+### 0.2.0
 
 - `fader_buddy.remote_move_to` takes `speed:` (0-255), and `layer_haptics`
   takes `default_speed:` for moves that don't name one.

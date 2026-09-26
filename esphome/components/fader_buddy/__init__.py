@@ -20,7 +20,7 @@ import requests
 from esphome import automation, external_files
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import button, i2c
+from esphome.components import button, i2c, update
 
 # Aliased: importing the sibling `text_sensor.py` platform module binds it as an
 # attribute of this package, which would shadow a plain `text_sensor` name here.
@@ -30,7 +30,10 @@ from esphome.core import CORE
 
 MULTI_CONF = True
 DEPENDENCIES = ["i2c"]
-AUTO_LOAD = ["button", "text_sensor"]
+# Loading `update` costs nothing when unused: USE_UPDATE, which gates all of the
+# update entity code, is only defined once an update entity is registered, and
+# that only happens for a fader with a firmware image.
+AUTO_LOAD = ["button", "text_sensor", "update"]
 
 DOMAIN = "fader_buddy"
 
@@ -96,6 +99,16 @@ KNOWN_FIRMWARE: dict[str, str] = {
 
 def _release_asset_name(version: str) -> str:
     return f"fader_buddy_app_v{version}.bin"
+
+
+def _latest_known_version() -> str:
+    """The newest version in KNOWN_FIRMWARE, used when the config doesn't pick one."""
+    return max(KNOWN_FIRMWARE, key=_parse_version)
+
+
+def _release_page_url(version: str) -> str:
+    """GitHub release page, used as the update entity's release notes link."""
+    return f"https://github.com/{GITHUB_REPO}/releases/tag/{RELEASE_TAG_PREFIX}v{version}"
 
 
 def _release_asset_url(version: str) -> str:
@@ -254,8 +267,8 @@ FaderBuddy = fader_buddy_ns.class_("FaderBuddy", cg.PollingComponent, i2c.I2CDev
 SelfCalibrationButton = fader_buddy_ns.class_(
     "SelfCalibrationButton", button.Button, cg.Parented.template(FaderBuddy)
 )
-FirmwareUpdateButton = fader_buddy_ns.class_(
-    "FirmwareUpdateButton", button.Button, cg.Parented.template(FaderBuddy)
+FaderBuddyUpdate = fader_buddy_ns.class_(
+    "FaderBuddyUpdate", update.UpdateEntity, cg.Parented.template(FaderBuddy)
 )
 
 # Used by platform files (e.g. text_sensor) to reference the parent hub
@@ -300,9 +313,38 @@ FIRMWARE_SCHEMA = cv.All(
     ),
     _validate_firmware,
 )
+
+
+def _firmware_or_none(value):
+    """`firmware: none` (or an empty value) opts out of the default image."""
+    if value is None or (isinstance(value, str) and value.strip().lower() == "none"):
+        return None
+    return FIRMWARE_SCHEMA(value)
+
+
+def _apply_default_firmware(config):
+    """Default to the newest known firmware when the config doesn't name one.
+
+    Without an image there is no update entity, so by default a fader would
+    never report whether it's out of date.
+
+    This is a validator rather than a schema default because a default would
+    always conflict with `firmware_image:` in has_at_most_one_key, and the
+    version still has to go through FIRMWARE_SCHEMA to be downloaded and
+    hash-checked.
+
+    `firmware: none` opts out, dropping the update entity along with the ~14 KB
+    image and the build-time download.
+    """
+    if CONF_FIRMWARE in config or CONF_FIRMWARE_IMAGE in config:
+        return config
+    config = config.copy()
+    config[CONF_FIRMWARE] = FIRMWARE_SCHEMA(_latest_known_version())
+    return config
 CONF_SPEED = "speed"
 CONF_DEFAULT_SPEED = "default_speed"
 CONF_SERIAL_NUMBER = "serial_number"
+CONF_STATUS = "status"
 CONF_FIRMWARE_VERSION = "firmware_version"
 CONF_SELF_CALIBRATION = "self_calibration"
 CONF_FIRMWARE_UPDATE = "firmware_update"
@@ -313,18 +355,23 @@ CONF_FIRMWARE_UPDATE = "firmware_update"
 # or `disabled_by_default: true` to have HA register it but leave it off.
 AUTO_TEXT_SENSORS = {
     CONF_SERIAL_NUMBER: ("Serial Number", "mdi:identifier"),
-    CONF_FIRMWARE_VERSION: ("Firmware Version", "mdi:chip"),
+    CONF_STATUS: ("Status", "mdi:information-outline"),
 }
 
-# Buttons the hub creates itself, same deal. A press here ties the fader up for
-# seconds - sweeping the carriage, or rewriting its flash - so these are
-# entity_category "config" rather than controls.
+# Buttons the hub creates itself, same deal. Self calibration ties the fader up
+# for seconds while it sweeps the carriage, so it's entity_category "config"
+# rather than a control.
 AUTO_BUTTONS = {
     CONF_SELF_CALIBRATION: ("Self Calibration", "mdi:tune-vertical"),
-    CONF_FIRMWARE_UPDATE: ("Firmware Update", "mdi:package-down"),
 }
 
-AUTO_ENTITIES = {**AUTO_TEXT_SENSORS, **AUTO_BUTTONS}
+# The firmware update entity. Only created for a fader with a firmware image
+# (see to_code).
+AUTO_UPDATES = {
+    CONF_FIRMWARE_UPDATE: ("Firmware", "mdi:chip"),
+}
+
+AUTO_ENTITIES = {**AUTO_TEXT_SENSORS, **AUTO_BUTTONS, **AUTO_UPDATES}
 
 
 def _default_entity_names(config):
@@ -351,8 +398,11 @@ def _default_entity_names(config):
 
 
 def _has_firmware(config):
-    """True if this fader has a packaged image to install."""
-    return CONF_FIRMWARE in config or CONF_FIRMWARE_IMAGE in config
+    """True if this fader has a packaged image to install.
+
+    `firmware: none` validates to None; see _apply_default_firmware.
+    """
+    return config.get(CONF_FIRMWARE) is not None or CONF_FIRMWARE_IMAGE in config
 
 
 def _claimed_by_legacy_platform(config, key):
@@ -395,23 +445,30 @@ CONFIG_SCHEMA = cv.All(
             entity_category="diagnostic",
             icon=AUTO_TEXT_SENSORS[CONF_SERIAL_NUMBER][1],
         ),
-        cv.Optional(CONF_FIRMWARE_VERSION, default={}): core_text_sensor.text_sensor_schema(
+        # Diagnostic text: firmware version, "not responding", a required UPDI
+        # reflash, or update progress.
+        cv.Optional(CONF_STATUS, default={}): core_text_sensor.text_sensor_schema(
             entity_category="diagnostic",
-            icon=AUTO_TEXT_SENSORS[CONF_FIRMWARE_VERSION][1],
+            icon=AUTO_TEXT_SENSORS[CONF_STATUS][1],
+        ),
+        # Removed in 0.4.0: the version is reported by the firmware update
+        # entity, and the sensor's other messages moved to `status:`.
+        cv.Optional(CONF_FIRMWARE_VERSION): cv.invalid(
+            "`firmware_version:` was removed in fader_buddy 0.4.0. The firmware version is "
+            "now reported by the `firmware_update:` entity. If you need it as a text sensor "
+            "(e.g. for a dashboard or LVGL), use `status:`, which includes the version."
         ),
         cv.Optional(CONF_SELF_CALIBRATION, default={}): button.button_schema(
             SelfCalibrationButton,
             entity_category="config",
             icon=AUTO_BUTTONS[CONF_SELF_CALIBRATION][1],
         ),
-        # Only created when a firmware image is configured (see to_code); with
-        # nothing to install the button would have nothing to do. Whether an
-        # update is actually pending is runtime state, so a press still checks
-        # that (see FaderBuddy::request_firmware_update).
-        cv.Optional(CONF_FIRMWARE_UPDATE, default={}): button.button_schema(
-            FirmwareUpdateButton,
-            entity_category="config",
-            icon=AUTO_BUTTONS[CONF_FIRMWARE_UPDATE][1],
+        # Only created when a firmware image is configured (see to_code).
+        # Whether an update is available is decided on the device at runtime.
+        cv.Optional(CONF_FIRMWARE_UPDATE, default={}): update.update_schema(
+            FaderBuddyUpdate,
+            device_class="firmware",
+            icon=AUTO_UPDATES[CONF_FIRMWARE_UPDATE][1],
         ),
         cv.Optional(CONF_ON_MANUAL_MOVE): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_RAW_POSITION_UPDATE): automation.validate_automation(single=True),
@@ -428,11 +485,12 @@ CONFIG_SCHEMA = cv.All(
         # Released image fetched from its GitHub release asset and pinned by hash.
         # Mutually exclusive with firmware_image, which is the local-file escape
         # hatch for iterating on an unreleased build.
-        cv.Optional(CONF_FIRMWARE): FIRMWARE_SCHEMA,
+        cv.Optional(CONF_FIRMWARE): _firmware_or_none,
     })
     .extend(cv.polling_component_schema("50ms"))
     .extend(i2c.i2c_device_schema(0x20)),  # default I2C address
     cv.has_at_most_one_key(CONF_FIRMWARE, CONF_FIRMWARE_IMAGE),
+    _apply_default_firmware,
 )
 
 async def to_code(config):
@@ -446,17 +504,22 @@ async def to_code(config):
     if not _claimed_by_legacy_platform(config, CONF_SERIAL_NUMBER):
         sens = await core_text_sensor.new_text_sensor(config[CONF_SERIAL_NUMBER])
         cg.add(var.set_serial_text_sensor(sens))
-    if not _claimed_by_legacy_platform(config, CONF_FIRMWARE_VERSION):
-        sens = await core_text_sensor.new_text_sensor(config[CONF_FIRMWARE_VERSION])
-        cg.add(var.set_firmware_text_sensor(sens))
+    sens = await core_text_sensor.new_text_sensor(config[CONF_STATUS])
+    cg.add(var.set_status_text_sensor(sens))
 
     for key in AUTO_BUTTONS:
-        # No firmware configured means nothing the button could ever install, so
-        # don't put a dead entity in Home Assistant.
-        if key == CONF_FIRMWARE_UPDATE and not _has_firmware(config):
-            continue
         btn = await button.new_button(config[key])
         await cg.register_parented(btn, config[CONF_ID])
+
+    # With no firmware image there's nothing to install, so skip the update
+    # entity. Its latest version is read from the image at runtime (see
+    # FaderBuddy::setup); only the release URL is set here.
+    if _has_firmware(config):
+        upd = await update.new_update(config[CONF_FIRMWARE_UPDATE])
+        await cg.register_parented(upd, config[CONF_ID])
+        cg.add(var.set_update_entity(upd))
+        if config.get(CONF_FIRMWARE) is not None:
+            cg.add(upd.set_release_url(_release_page_url(config[CONF_FIRMWARE][CONF_VERSION])))
 
     # Store initial layer haptic configurations (sent during setup)
     if CONF_LAYER_HAPTICS in config:
@@ -502,7 +565,7 @@ async def to_code(config):
         )
 
     image = None
-    if CONF_FIRMWARE in config:
+    if config.get(CONF_FIRMWARE) is not None:
         data, cache_key, source, expect_version = _resolve_firmware(config[CONF_FIRMWARE])
         image = _get_or_emit_firmware_image(data, cache_key, source, expect_version)
     elif CONF_FIRMWARE_IMAGE in config:
