@@ -53,6 +53,7 @@ The FaderBuddy integrates seamlessly with [ESPHome](https://esphome.io/) for Hom
 - Layer-aware automation triggers (manual_move, touch_change, double_tap)
 - Per-layer haptic configuration
 - Multiple faders on a single ESP32 via I2C
+- 1-click firmware updates of FaderBuddy boards from Home Assistant
 
 A simple example looks like:
 ```yaml
@@ -78,6 +79,11 @@ id(my_fader).remote_move_to(position, layer, 128);
 That's pretty much all there is to it!
 
 See [ABOUT_ESPHOME_INTEGRATION.md](ABOUT_ESPHOME_INTEGRATION.md) for setup instructions and many more examples.
+
+Here's what firmware updates look like:
+
+[Screencast from 2026-09-26 15-10-06.webm](https://github.com/user-attachments/assets/42ae8efa-67ab-416a-ac13-be791ac7859f)
+
 
 ## Getting Started
 What you need:
