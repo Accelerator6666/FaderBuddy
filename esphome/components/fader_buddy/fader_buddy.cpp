@@ -361,6 +361,17 @@ void FaderBuddy::publish_status_(const std::string &text) {
 // Called whenever the fader's firmware state changes, so the status sensor and
 // the update entity stay in sync.
 void FaderBuddy::publish_firmware_state_() {
+  // A waiting fader keeps showing as pending, whatever else changes while it
+  // waits (a re-probe, a check for updates), until its turn comes.
+  if (update_pending_) {
+    publish_status_("Update pending");
+#ifdef USE_UPDATE
+    if (this->update_entity_ != nullptr) {
+      this->update_entity_->publish_pending();
+    }
+#endif
+    return;
+  }
   publish_status_(status_text_());
 #ifdef USE_UPDATE
   if (this->update_entity_ != nullptr) {
@@ -411,6 +422,10 @@ float FaderBuddy::get_setup_priority() const { return setup_priority::DATA; }
 void FaderBuddy::loop() {
   if (update_stage_ != UPDATE_IDLE) {
     update_tick_();
+  }
+  if (update_pending_ && !s_update_in_progress) {
+    update_pending_ = false;
+    begin_update_();
   }
 }
 
@@ -867,8 +882,8 @@ void FaderBuddy::start_firmware_update(bool force) {
 // picks up a fader that was reflashed over UPDI, or one that only started
 // responding after the startup re-probes gave up.
 void FaderBuddy::refresh_firmware_state() {
-  if (update_stage_ != UPDATE_IDLE) {
-    return;  // an update in progress publishes its own state
+  if (update_stage_ != UPDATE_IDLE || update_pending_) {
+    return;  // an update in progress, or waiting, publishes its own state
   }
   if (awaiting_device_) {
     probe_and_init_(false);
@@ -905,17 +920,26 @@ void FaderBuddy::update_firmware() {
     on_firmware_update_result_->trigger(false, "update already in progress");
     return;
   }
+  if (update_pending_) {
+    // The waiting request will report the result.
+    ESP_LOGD(TAG, "update_firmware: already pending");
+    return;
+  }
+  // Wait for the bus rather than refuse: Home Assistant's "update all" asks
+  // for every fader at once, so this is the normal case. loop() starts it.
   if (s_update_in_progress) {
-    ESP_LOGW(TAG, "update_firmware: another fader's update is already in progress, skipping");
-    // Republish so Home Assistant goes back to showing "update available"
-    // instead of a stalled install. Retry once the other fader is done.
+    ESP_LOGI(TAG, "update_firmware: another fader is updating, pending");
+    update_pending_ = true;
     publish_firmware_state_();
-    on_firmware_update_result_->trigger(false, "another update already in progress");
     return;
   }
 
+  begin_update_();
+}
+
+void FaderBuddy::begin_update_() {
   // Claim the bus for this fader before the first tick, so a second request
-  // landing later in the same loop iteration is refused rather than interleaved.
+  // landing later in the same loop iteration waits rather than interleaves.
   s_update_in_progress = true;
   update_page_ = 0;
   update_progress_pct_ = 0xFF;
