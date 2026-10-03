@@ -18,9 +18,6 @@ Multiple FaderBuddy boards can be wired together and share just two I2C pins. Wi
 each other without any wires for an easy plug-and-play expandable system (supports 18mm or 19mm spacing between faders).
 STEMMA QT/QWIIC-compatible connectors make it easy to hook FaderBuddy boards to the rest of your design (see [wiring diagrams](#wiring-overview) below for examples).
 
-<!--
-<img alt="motor fader demo tiny" height="427" src="https://github.com/user-attachments/assets/fc8dd191-fca0-4ac6-80d8-bb88dc9d0a7a" />
--->
 <p align="center">
 <img width="435" height="245" alt="FaderBuddySimpleTopDown" src="https://github.com/user-attachments/assets/8a98dc1c-cbcf-4585-8ef0-39cc0e5eeb9b" />
 </p>
@@ -166,6 +163,20 @@ When connecting more than one FaderBuddy to the same I2C bus, or if there's alre
 | `0x25`  | `[█]` | `[ ]` | `[█]` |
 | `0x26`  | `[█]` | `[█]` | `[ ]` |
 | `0x27`  | `[█]` | `[█]` | `[█]` |
+
+## Calibrating Your Fader
+Once your FaderBuddy is mounted on its motorized fader and connected to Home Assistant, run a self-calibration to tune the motor control. FaderBuddy will come with a generic profile, but it may not move as smoothly or settle well.
+
+To calibrate from Home Assistant:
+1. Open the device page for your fader (**Settings → Devices & services → ESPHome**, then select your device).
+2. Under **Configuration**, press **Self Calibration**.
+3. Keep your hands off the fader while it sweeps the knob to both ends of its travel and back. This takes a few seconds.
+4. Check the fader's **Status** sensor under **Diagnostic** - it should read `calibration succeeded`. If it reports a failure instead, it says why.
+
+
+https://github.com/user-attachments/assets/dca807f0-2b44-4b6c-8e06-34a2b3fe7681
+
+The results are stored on the FaderBuddy in flash, so you only need to do this once per board - re-run it if you move the board to a different fader or change something substantial (like adding a heavy fader cap).
 
 ## About the Board Design
 The most plug-and-play option (if you're in the US) is to buy the FaderBuddy PCBs [pre-assembled from the Bezek Labs store](https://bezeklabs.etsy.com/listing/4506790932), which come with firmware already flashed, the hardware tested, and it helps support this project and future development!
