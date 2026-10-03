@@ -94,6 +94,7 @@ RELEASE_TAG_PREFIX = "releases/firmware/"
 KNOWN_FIRMWARE: dict[str, str] = {
     "1.3": "e5f192e8cee97a866a59082b76ac9f49f562df2a45a45adb5ffa3c46efb2fce8",
     "1.4": "520f219774fb17b3e875ca77cb7a49d06e047d219ec19d13240157dd7eeb5a10",
+    "1.5": "fb0e1f8a6c73e3ea8cef2b8ad7a9336b62903f62ed9a3137fbbb37ece7aab2cf",
 }
 
 
