@@ -32,7 +32,8 @@ that check it will read `0xFFFF` and should treat that as firmware 1.0.
 All boards built to date - all are essentially identical, with minor changes
 for production purposes.
 
-- **v1.3.1** (pre-release) - adds a panelized gerber/BOM/CPL export for
+- **v1.3.2** - tunes panelization parameters for bulk ordering
+- **v1.3.1** - adds a panelized gerber/BOM/CPL export for
   ordering 10 boards per panel. Only board change is two vias moved 0.75mm
   for mousebite clearance.
 - **v1.3** - design files migrated to KiCad 10 (from 8); back silkscreen
@@ -46,7 +47,7 @@ for production purposes.
 
 ## Firmware (ATtiny1616)
 
-### 1.5 - unreleased
+### 1.5
 
 - Haptics (detents and magnetic ends) now run through the same control law as
   remote moves - position loop, plant-model feedforward and velocity loop -
@@ -57,11 +58,11 @@ for production purposes.
   the strength scale was remapped: the cap now runs from 110 duty (strength 0)
   to full (strength 7). The feel of each strength level has changed.
 
-### 1.4 - unreleased
+### 1.4
 
 - Version bump only, for testing a firmware update.
 
-### 1.3 - unreleased
+### 1.3
 
 - Firmware can be updated over I2C. A bootloader in the ATtiny1616's boot
   section receives the new application image, and `REG_ENTER_BOOTLOADER` (0x10)
@@ -141,7 +142,7 @@ layer-addressed registers.
 
 ## ESPHome component
 
-### 0.4.1 - unreleased
+### 0.5.0 - in development / unreleased
 
 - Installing firmware on several faders at once (e.g. Home Assistant's
   **Update all**) now updates each in turn, instead of refusing all but the
@@ -149,6 +150,7 @@ layer-addressed registers.
   **Update pending** on its Status sensor. `fader_buddy.update_firmware` waits
   the same way, and its `on_firmware_update_result` fires when the update
   actually finishes.
+- Packages firmware v1.5
 
 ### 0.4.0
 
