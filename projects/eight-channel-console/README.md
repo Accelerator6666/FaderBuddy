@@ -16,6 +16,14 @@ Final target:
   - Layer 3: MIDI / custom control
 - Later expansion for display, per-channel buttons and LEDs
 
+## Files
+
+- `v0.1-single-fader.yaml` - single-channel electrical and ESPHome bring-up
+- `v0.2-four-fader.yaml` - four-channel shared-I2C and layer validation
+- `v0.3-eight-fader.yaml` - complete eight-address console bench configuration
+- `POWER_AND_BUS.md` - eight-channel power distribution, I2C topology and staged bring-up
+- `secrets.yaml.example` - ESPHome secrets template
+
 ## Development stages
 
 ### V0.1 - single-fader bring-up
@@ -61,7 +69,40 @@ This stage validates shared-bus operation and synchronized layer switching befor
 
 ### V0.3 - eight-fader console
 
-Planned addresses are `0x20` through `0x27`. At this stage the motor 5 V rail should be treated as a separate power domain from the ESP32 logic supply, with common ground and adequate current capacity for simultaneous motion.
+Use `v0.3-eight-fader.yaml` and read `POWER_AND_BUS.md` before powering the full motor bank.
+
+Addresses:
+
+| Channel | Address | A2 | A1 | A0 |
+|---|---:|---|---|---|
+| 1 | `0x20` | open | open | open |
+| 2 | `0x21` | open | open | bridged |
+| 3 | `0x22` | open | bridged | open |
+| 4 | `0x23` | open | bridged | bridged |
+| 5 | `0x24` | bridged | open | open |
+| 6 | `0x25` | bridged | open | bridged |
+| 7 | `0x26` | bridged | bridged | open |
+| 8 | `0x27` | bridged | bridged | bridged |
+
+V0.3 adds:
+
+- all eight FaderBuddy addresses on one bus
+- `CH1` through `CH8` position, target and touch entities
+- synchronized global layer switching across all eight faders
+- `Layer Sync Count` diagnostic; normal settled value is `8`
+- a staggered center test that deliberately avoids a first-run simultaneous motor transient
+- a conservative `20ms` polling interval per fader for initial full-bus validation
+
+The four test layers retain distinct haptic behavior so layer changes are easy to verify physically:
+
+| Layer | Haptic mode | Purpose |
+|---|---|---|
+| 0 | smooth | baseline continuous control |
+| 1 | smooth with magnetic endpoints | layer-change tactile check |
+| 2 | 5 detents | stepped-control test |
+| 3 | 9 detents | finer stepped-control test |
+
+A requested layer change can be deferred on a fader that is currently touched or manually moving. During that interval `Layer Sync Count` may temporarily be below `8`; after release it should return to `8`.
 
 ### V1.0 - application layers
 
@@ -71,6 +112,8 @@ Planned host roles:
 - Windows audio bridge
 - OBS WebSocket bridge
 - USB MIDI / custom HID on ESP32-S3
+
+The V0.3 configuration deliberately keeps these application mappings out of the motor-control test. First prove eight-channel electrical, I2C, calibration and layer behavior; then add PC/HA application bridges without changing the FaderBuddy real-time motor firmware.
 
 ## Important design rule
 
