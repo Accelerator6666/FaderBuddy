@@ -97,13 +97,12 @@ class WindowsMasterAdapter(Adapter):
     def __init__(self):
         if os.name != "nt":
             raise RuntimeError("windows_master requires Windows")
-        from ctypes import POINTER, cast
-        from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from pycaw.pycaw import AudioUtilities
 
         device = AudioUtilities.GetSpeakers()
-        interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        self.volume = cast(interface, POINTER(IAudioEndpointVolume))
+        if device is None:
+            raise RuntimeError("no default Windows speaker device found")
+        self.volume = device.EndpointVolume
 
     def set_position(self, position: int) -> None:
         self.volume.SetMasterVolumeLevelScalar(pos_to_unit(position), None)
@@ -154,7 +153,7 @@ class OBSInputAdapter(Adapter):
         self.input_name = input_name
 
     def set_position(self, position: int) -> None:
-        self.client.set_input_volume_mul(self.input_name, pos_to_unit(position))
+        self.client.set_input_volume(self.input_name, vol_mul=pos_to_unit(position))
 
     def get_position(self) -> Optional[int]:
         response = self.client.get_input_volume(self.input_name)
