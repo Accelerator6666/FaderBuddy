@@ -24,6 +24,12 @@ Final target:
 - `POWER_AND_BUS.md` - eight-channel power distribution, I2C topology and staged bring-up
 - `secrets.yaml.example` - ESPHome secrets template
 
+## Current status
+
+The project currently stops at the **bench-validation layer**. V0.3 is designed to prove eight physical faders, unique I2C addresses, calibration, touch reporting, synchronized layer switching and safe staged motor movement before Windows/OBS/MIDI bridges are added.
+
+Keep the pull request in draft until the single-fader and eight-fader hardware tests are completed.
+
 ## Development stages
 
 ### V0.1 - single-fader bring-up
