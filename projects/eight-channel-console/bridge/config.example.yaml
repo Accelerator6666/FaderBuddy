@@ -1,0 +1,66 @@
+# Copy to config.yaml and edit for your environment.
+# Environment variables such as ${HA_TOKEN} and ${OBS_PASSWORD} are expanded.
+
+topic_prefix: faderbuddy/console
+
+mqtt:
+  host: 192.168.1.10
+  port: 1883
+  username: faderbuddy
+  password: CHANGE_ME
+  client_id: faderbuddy-pc-bridge
+  tls: false
+
+sync_interval: 0.75
+sync_deadband: 2
+
+home_assistant:
+  url: http://homeassistant.local:8123
+  token: ${HA_TOKEN}
+
+obs:
+  host: 127.0.0.1
+  port: 4455
+  password: ${OBS_PASSWORD}
+  timeout: 3
+
+layers:
+  "0":
+    "1": {type: homeassistant_light, entity_id: light.living_room}
+    "2": {type: homeassistant_light, entity_id: light.desk}
+    "3": {type: homeassistant_light, entity_id: light.kitchen}
+    "4": {type: homeassistant_light, entity_id: light.bedroom}
+    "5": {type: homeassistant_light, entity_id: light.hallway}
+    "6": {type: homeassistant_light, entity_id: light.office}
+    "7": {type: homeassistant_light, entity_id: light.accent}
+    "8": {type: homeassistant_light, entity_id: light.spare}
+
+  "1":
+    "1": {type: windows_master}
+    "2": {type: windows_session, process: chrome.exe}
+    "3": {type: windows_session, process: msedge.exe}
+    "4": {type: windows_session, process: spotify.exe}
+    "5": {type: windows_session, process: discord.exe}
+    "6": {type: windows_session, process: vlc.exe}
+    "7": {type: windows_session, process: obs64.exe}
+    "8": {type: windows_session, process: steam.exe}
+
+  "2":
+    "1": {type: obs_input, input: "Mic/Aux"}
+    "2": {type: obs_input, input: "Desktop Audio"}
+    "3": {type: obs_input, input: "Music"}
+    "4": {type: obs_input, input: "Browser"}
+    "5": {type: obs_input, input: "Game"}
+    "6": {type: obs_input, input: "Discord"}
+    "7": {type: obs_input, input: "Media Source"}
+    "8": {type: obs_input, input: "Spare"}
+
+  "3":
+    "1": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 1}
+    "2": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 2}
+    "3": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 3}
+    "4": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 4}
+    "5": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 5}
+    "6": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 6}
+    "7": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 7}
+    "8": {type: midi_cc, port: "FaderBuddy MIDI", midi_channel: 0, cc: 8}
