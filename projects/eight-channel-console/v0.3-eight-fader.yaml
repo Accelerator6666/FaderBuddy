@@ -1,0 +1,611 @@
+esphome:
+  name: faderbuddy-v03
+  friendly_name: FaderBuddy V0.3
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+captive_portal:
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/Accelerator6666/FaderBuddy.git
+      ref: eight-channel-console
+    components: [fader_buddy]
+
+# Keep the first eight-channel bring-up conservative: 50 Hz per fader rather
+# than the 100 Hz used by the smaller V0.1/V0.2 tests. Once the full bus is
+# proven stable this can be reduced to 10ms if desired.
+i2c:
+  sda: GPIO12
+  scl: GPIO13
+  scan: true
+
+sensor:
+  - platform: template
+    name: "CH1 Position"
+    id: ch1_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH2 Position"
+    id: ch2_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH3 Position"
+    id: ch3_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH4 Position"
+    id: ch4_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH5 Position"
+    id: ch5_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH6 Position"
+    id: ch6_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH7 Position"
+    id: ch7_position
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "CH8 Position"
+    id: ch8_position
+    accuracy_decimals: 0
+    update_interval: never
+
+  # Diagnostic: 8 means all physical faders report the layer requested by the
+  # global Active Layer control. A temporary lower value is expected if a layer
+  # change is requested while a user is touching a fader because FaderBuddy
+  # intentionally defers that channel's layer transition until release.
+  - platform: template
+    name: "Layer Sync Count"
+    id: layer_sync_count
+    accuracy_decimals: 0
+    update_interval: 500ms
+    lambda: |-
+      const uint8_t expected = (uint8_t) id(active_layer).state;
+      uint8_t count = 0;
+      count += id(fader_1).get_active_layer() == expected;
+      count += id(fader_2).get_active_layer() == expected;
+      count += id(fader_3).get_active_layer() == expected;
+      count += id(fader_4).get_active_layer() == expected;
+      count += id(fader_5).get_active_layer() == expected;
+      count += id(fader_6).get_active_layer() == expected;
+      count += id(fader_7).get_active_layer() == expected;
+      count += id(fader_8).get_active_layer() == expected;
+      return count;
+
+binary_sensor:
+  - platform: template
+    name: "CH1 Touch"
+    id: ch1_touch
+  - platform: template
+    name: "CH2 Touch"
+    id: ch2_touch
+  - platform: template
+    name: "CH3 Touch"
+    id: ch3_touch
+  - platform: template
+    name: "CH4 Touch"
+    id: ch4_touch
+  - platform: template
+    name: "CH5 Touch"
+    id: ch5_touch
+  - platform: template
+    name: "CH6 Touch"
+    id: ch6_touch
+  - platform: template
+    name: "CH7 Touch"
+    id: ch7_touch
+  - platform: template
+    name: "CH8 Touch"
+    id: ch8_touch
+
+number:
+  - platform: template
+    name: "Active Layer"
+    id: active_layer
+    min_value: 0
+    max_value: 3
+    step: 1
+    optimistic: true
+    initial_value: 0
+    set_action:
+      - fader_buddy.set_active_layer:
+          id: fader_1
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_2
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_3
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_4
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_5
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_6
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_7
+          layer: !lambda 'return (uint8_t)x;'
+      - fader_buddy.set_active_layer:
+          id: fader_8
+          layer: !lambda 'return (uint8_t)x;'
+
+  - platform: template
+    name: "CH1 Target"
+    id: ch1_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_1
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH2 Target"
+    id: ch2_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_2
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH3 Target"
+    id: ch3_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_3
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH4 Target"
+    id: ch4_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_4
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH5 Target"
+    id: ch5_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_5
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH6 Target"
+    id: ch6_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_6
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH7 Target"
+    id: ch7_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_7
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+  - platform: template
+    name: "CH8 Target"
+    id: ch8_target
+    min_value: 0
+    max_value: 255
+    step: 1
+    optimistic: true
+    set_action:
+      - fader_buddy.remote_move_to:
+          id: fader_8
+          position: !lambda 'return (uint8_t)x;'
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 100
+
+button:
+  # Staggered rather than simultaneous motion is intentional for first power-up.
+  # Validate the motor rail before adding any simultaneous full-bank sweep test.
+  - platform: template
+    name: "Staggered Center Test"
+    on_press:
+      - fader_buddy.remote_move_to:
+          id: fader_1
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_2
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_3
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_4
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_5
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_6
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_7
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+      - delay: 150ms
+      - fader_buddy.remote_move_to:
+          id: fader_8
+          position: 128
+          layer: !lambda 'return (uint8_t)id(active_layer).state;'
+          speed: 80
+
+fader_buddy:
+  - id: fader_1
+    address: 0x20
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch1_position).publish_state(x);
+            id(ch1_target).publish_state(x);
+            ESP_LOGI("fader", "CH1 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch1_touch).publish_state(x);
+
+  - id: fader_2
+    address: 0x21
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch2_position).publish_state(x);
+            id(ch2_target).publish_state(x);
+            ESP_LOGI("fader", "CH2 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch2_touch).publish_state(x);
+
+  - id: fader_3
+    address: 0x22
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch3_position).publish_state(x);
+            id(ch3_target).publish_state(x);
+            ESP_LOGI("fader", "CH3 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch3_touch).publish_state(x);
+
+  - id: fader_4
+    address: 0x23
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch4_position).publish_state(x);
+            id(ch4_target).publish_state(x);
+            ESP_LOGI("fader", "CH4 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch4_touch).publish_state(x);
+
+  - id: fader_5
+    address: 0x24
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch5_position).publish_state(x);
+            id(ch5_target).publish_state(x);
+            ESP_LOGI("fader", "CH5 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch5_touch).publish_state(x);
+
+  - id: fader_6
+    address: 0x25
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch6_position).publish_state(x);
+            id(ch6_target).publish_state(x);
+            ESP_LOGI("fader", "CH6 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch6_touch).publish_state(x);
+
+  - id: fader_7
+    address: 0x26
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch7_position).publish_state(x);
+            id(ch7_target).publish_state(x);
+            ESP_LOGI("fader", "CH7 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch7_touch).publish_state(x);
+
+  - id: fader_8
+    address: 0x27
+    update_interval: 20ms
+    layer_haptics:
+      - layer: 0
+        mode: smooth
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 1
+        mode: smooth_with_magnets
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 2
+        mode: detents
+        detent_count: 5
+        detent_strength: 3
+        default_speed: 100
+        value_change_min_interval: 25ms
+      - layer: 3
+        mode: detents
+        detent_count: 9
+        detent_strength: 2
+        default_speed: 100
+        value_change_min_interval: 25ms
+    on_manual_move:
+      then:
+        - lambda: |-
+            id(ch8_position).publish_state(x);
+            id(ch8_target).publish_state(x);
+            ESP_LOGI("fader", "CH8 move=%u layer=%u", x, layer);
+    on_touch_change:
+      then:
+        - lambda: |-
+            id(ch8_touch).publish_state(x);
