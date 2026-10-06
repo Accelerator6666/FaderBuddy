@@ -21,14 +21,19 @@ Final target:
 - `v0.1-single-fader.yaml` - single-channel electrical and ESPHome bring-up
 - `v0.2-four-fader.yaml` - four-channel shared-I2C and layer validation
 - `v0.3-eight-fader.yaml` - complete eight-address console bench configuration
+- `v1.0-eight-fader-app.yaml` - eight-channel MQTT application transport
 - `POWER_AND_BUS.md` - eight-channel power distribution, I2C topology and staged bring-up
-- `secrets.yaml.example` - ESPHome secrets template
+- `V1_APPLICATIONS.md` - V1 protocol, bridge setup and application-layer behavior
+- `bridge/fader_bridge.py` - Windows-side Home Assistant / Windows Audio / OBS / MIDI bridge
+- `bridge/config.example.yaml` - example per-layer mapping
+- `bridge/requirements.txt` - bridge Python dependencies
+- `secrets.yaml.example` - ESPHome Wi-Fi/API/OTA/MQTT secrets template
 
 ## Current status
 
-The project currently stops at the **bench-validation layer**. V0.3 is designed to prove eight physical faders, unique I2C addresses, calibration, touch reporting, synchronized layer switching and safe staged motor movement before Windows/OBS/MIDI bridges are added.
+V0.1 through V0.3 define the staged hardware validation path. V1.0 now adds the application transport and a first PC bridge implementation, but the project is still **hardware-validation pending**.
 
-Keep the pull request in draft until the single-fader and eight-fader hardware tests are completed.
+Keep pull request #1 in draft until the single-fader, four-fader, eight-fader and V1 application tests have all passed on real hardware.
 
 ## Development stages
 
@@ -112,17 +117,25 @@ A requested layer change can be deferred on a fader that is currently touched or
 
 ### V1.0 - application layers
 
-Planned host roles:
+Use `v1.0-eight-fader-app.yaml` together with the bridge under `bridge/` and read `V1_APPLICATIONS.md`.
 
-- Home Assistant / ESPHome
-- Windows audio bridge
-- OBS WebSocket bridge
-- USB MIDI / custom HID on ESP32-S3
+V1.0 keeps the FaderBuddy real-time firmware unchanged and adds MQTT JSON transport between the ESP32-S3 and a Windows-side bridge.
 
-The V0.3 configuration deliberately keeps these application mappings out of the motor-control test. First prove eight-channel electrical, I2C, calibration and layer behavior; then add PC/HA application bridges without changing the FaderBuddy real-time motor firmware.
+Default application roles:
+
+| Layer | Role | Initial implementation |
+|---:|---|---|
+| 0 | Home Assistant | light brightness + double-tap toggle |
+| 1 | Windows Audio | master/session volume + double-tap mute |
+| 2 | OBS | input volume + double-tap mute |
+| 3 | MIDI | output MIDI CC |
+
+The bridge also polls controls that support feedback and writes their current values into the corresponding FaderBuddy layer, including inactive layers. This preserves the motorized-fader behavior when changing layers.
+
+The initial MIDI adapter is output-only; bidirectional MIDI/DAW feedback is intentionally left for a later iteration.
 
 ## Important design rule
 
-Do not modify the FaderBuddy motor-control firmware for console-specific behavior unless necessary. Keep real-time motor control, touch sensing, calibration and layer state inside FaderBuddy; implement application mapping on the ESP32-S3 host.
+Do not modify the FaderBuddy motor-control firmware for console-specific behavior unless necessary. Keep real-time motor control, touch sensing, calibration and layer state inside FaderBuddy; implement application mapping on the ESP32-S3 host and bridge.
 
 FaderBuddy already stores eight independent layers per physical fader. Each layer remembers its target position and haptic configuration, and switching layers automatically restores the stored position.
